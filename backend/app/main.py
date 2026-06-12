@@ -62,13 +62,21 @@ async def lifespan(app: FastAPI):
     # 开发期可 export QABOT_SKIP_CHARCHECK=1 跳过
     if os.environ.get("QABOT_SKIP_CHARCHECK") != "1":
         charcheck.assert_clean(strict=True)
-    task = bot.start_in_background()
+    # 钉钉 Stream 是无条件出向连接，连不上时会同步重试。无凭证的环境（本地测试 / CI /
+    # verify 隔离实例）设 QABOT_DISABLE_BOT=1 可跳过，让 Web/UI 照常起、不被钉钉重试拖住。
+    # 生产默认不设此变量，行为完全不变。
+    task = None
+    if os.environ.get("QABOT_DISABLE_BOT") == "1":
+        log.warning("QABOT_DISABLE_BOT=1，跳过钉钉 Stream 连接（仅 Web/UI 模式）")
+    else:
+        task = bot.start_in_background()
     bcast_scheduler.start()
     log.info("App started")
     try:
         yield
     finally:
-        task.cancel()
+        if task is not None:
+            task.cancel()
         bcast_scheduler.stop()
 
 
