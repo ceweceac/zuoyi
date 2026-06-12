@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Node（前端早已移除，保留以防）
+node_modules/
+dist/
+
+# === 敏感文件，绝对禁止入库 ===
+.env
+.env.*
+*.env
+deploy/.env
+data/
+logs/
+*.key
+*.pem
+*.crt
+*.master.key
+.master.key
+
+# 数据库导出
+*.sqlite*
+*.db
+
+# 系统
+.DS_Store
+Thumbs.db

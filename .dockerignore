@@ -1,0 +1,10 @@
+.git
+.idea
+.vscode
+target
+**/node_modules
+**/dist
+data
+logs
+*.md
+deploy/.env

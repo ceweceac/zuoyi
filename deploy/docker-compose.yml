@@ -1,0 +1,28 @@
+name: qa-bot
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    image: qa-bot:0.1.0
+    container_name: qa-bot
+    restart: unless-stopped
+    environment:
+      DINGTALK_CLIENT_ID:     ${DINGTALK_CLIENT_ID}
+      DINGTALK_CLIENT_SECRET: ${DINGTALK_CLIENT_SECRET}
+      LLM_ENABLED:  ${LLM_ENABLED:-false}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      LLM_API_KEY:  ${LLM_API_KEY:-}
+      LLM_MODEL:    ${LLM_MODEL:-qwen-plus}
+      JWT_SECRET:   ${JWT_SECRET:-please-change-this-secret-at-least-32-bytes!!}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/qabot.db}
+    volumes:
+      - qabot-data:/app/data
+      - qabot-logs:/app/logs
+    ports:
+      - "8088:8080"     # 浏览器 / 钉钉 Stream 都从这个进程出去（Stream 是出向连接）
+
+volumes:
+  qabot-data:
+  qabot-logs:
