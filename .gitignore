@@ -32,6 +32,15 @@ logs/
 *.sqlite*
 *.db
 
+# NiceGUI 会话存储（含登录 JWT，绝不能入库！）
+.nicegui/
+**/.nicegui/
+
+# 误入库的本地产物
+*.before-restore-*
+logs_restart.log
+*.log
+
 # 系统
 .DS_Store
 Thumbs.db

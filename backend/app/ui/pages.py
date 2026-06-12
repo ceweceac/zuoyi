@@ -592,7 +592,8 @@ def page_qa():
         kw = ui.input("搜索问题或答案").bind_value(state, "keyword").classes("w-64").props("outlined dense")
         st = ui.select({"": "全部", "pending": "待审核", "approved": "已通过"}, value="").bind_value(state, "status").classes("w-28").props("outlined dense")
         ui.button("查询", icon="search", on_click=load).props("color=primary unelevated")
-        ui.button("新增", icon="add", on_click=lambda: open_edit(None)).props("unelevated").style("background:#6366f1;color:#fff")
+        if A.can_edit_qa():
+            ui.button("新增", icon="add", on_click=lambda: open_edit(None)).props("unelevated").style("background:#6366f1;color:#fff")
         ui.html('<div style="width:1px;height:28px;background:#e5e7eb;margin:0 4px"></div>')
         ui.upload(on_upload=lambda e: do_import(e), auto_upload=True, max_files=1)\
             .props('accept=".xlsx" label="导入表格" dense outlined').classes("w-36")
@@ -768,6 +769,12 @@ def page_qa():
             t_in = ui.input("标签（逗号分隔）", value=it.tags if it else "").classes("w-full")
 
             def save():
+                # 授权校验：仅 admin/editor 可新增/编辑 KB（与 REST qa.py 的 require_role 一致）。
+                # NiceGUI 回调在服务端执行，缺这道校验会让 viewer/auditor 越权改库、
+                # 甚至把已审核的线上条目改成 pending 后 reload 下线。
+                if not A.can_edit_qa():
+                    ui.notify("没有权限：仅管理员/编辑可新增或编辑知识库", type="negative")
+                    return
                 u = A.user()
                 db2 = SessionLocal()
                 try:
