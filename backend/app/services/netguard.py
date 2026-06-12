@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 import urllib.parse
 from typing import Tuple
@@ -18,19 +19,28 @@ class SSRFError(Exception):
     """URL 指向内网/非法地址，拒绝请求。"""
 
 
+def _intranet_allowed() -> bool:
+    """逃生开关：部分企业把告警/群发 webhook 指向内网中继（自建飞书/企微代理、
+    内网钉钉网关）。默认拦内网（安全优先）；显式设 QABOT_ALLOW_INTRANET_WEBHOOK=1
+    才放行私有/环回地址，避免在这类合法部署里把告警/群发静默打挂。
+    （link-local 169.254 云元数据仍始终拦截，不受此开关影响。）
+    """
+    return os.environ.get("QABOT_ALLOW_INTRANET_WEBHOOK") == "1"
+
+
 def _ip_is_blocked(ip: str) -> bool:
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
         return True  # 解析不了的当成不安全
-    return (
-        addr.is_private
-        or addr.is_loopback
-        or addr.is_link_local
-        or addr.is_reserved
-        or addr.is_multicast
-        or addr.is_unspecified
-    )
+    # link-local（含 169.254 云元数据）、multicast、unspecified 始终拦截，
+    # 即便开了内网放行也不放——这些不是合法的 webhook 目标。
+    if addr.is_link_local or addr.is_multicast or addr.is_unspecified:
+        return True
+    # 私有/环回/保留段：默认拦，开了逃生开关则放行（内网中继部署）
+    if addr.is_private or addr.is_loopback or addr.is_reserved:
+        return not _intranet_allowed()
+    return False
 
 
 def check_url(url: str) -> Tuple[bool, str]:

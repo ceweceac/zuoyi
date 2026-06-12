@@ -50,10 +50,11 @@ def send_alert(*,
         return False
 
     # SSRF 防线：告警 webhook 由管理员填写，校验不指向内网/保留地址
+    # 注意：用 block_reason 接返回，绝不能覆盖入参 reason（它是转人工原因，下方要渲染进卡片）
     from . import netguard
-    ok_url, reason = netguard.check_url(webhook)
+    ok_url, block_reason = netguard.check_url(webhook)
     if not ok_url:
-        log.warning("alert_webhook 被安全策略拒绝：%s", reason)
+        log.warning("alert_webhook 被安全策略拒绝：%s", block_reason)
         return False
 
     url = webhook
