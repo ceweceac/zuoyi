@@ -118,7 +118,9 @@ class _Handler(ChatbotHandler):
         msgtype = (msg.message_type or "").strip()
         if not text:
             if msgtype == "picture" or msg.image_content is not None:
-                text = _handle_user_image(msg)
+                # 图片下载是同步阻塞 IO（下载+识别），必须放线程池，
+                # 否则会卡住钉钉消息事件循环，后续消息全部延迟。
+                text = await asyncio.to_thread(_handle_user_image, msg)
             elif msgtype == "richText" or msg.rich_text_content is not None:
                 # 富文本里可能纯图、纯文字、图文混排
                 # 尝试提取里面的文字部分
@@ -127,8 +129,17 @@ class _Handler(ChatbotHandler):
                     inner_text = "".join(parts).strip()
                 except Exception:
                     inner_text = ""
-                if inner_text:
-                    text = inner_text   # 把里面的文字当成普通文本处理
+                # 富文本里有没有图？（典型场景：用户截图+配一句文字，如"这是什么情况"）
+                try:
+                    has_img = bool(msg.get_image_list())
+                except Exception:
+                    has_img = False
+                if has_img:
+                    # 图文混排：下载图+识别，把用户文字一起带上，让告警和pipeline都拿到
+                    img_marker = await asyncio.to_thread(_handle_user_image, msg)
+                    text = (img_marker + " " + inner_text).strip() if inner_text else img_marker
+                elif inner_text:
+                    text = inner_text   # 纯文字富文本，当普通文本处理
                 else:
                     text = "[NON_TEXT:richText] 用户发了富文本/图片"
             elif msgtype and msgtype != "text":
