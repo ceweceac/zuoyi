@@ -486,11 +486,12 @@ def _build_user_reply(user_text: str) -> tuple:
 
 def _do_escalate(rec, sender: str, sender_name: str, raw_text: str,
                  reason: str, level: str = "warn", extra_reply: str = "",
-                 prefix_reply: str = "") -> str:
+                 prefix_reply: str = "", image_url: str = "", image_desc: str = "") -> str:
     """统一的转人工：写审计 + 发告警 + 返回给用户的话术。
 
     extra_reply: 可选，追加到给用户的转人工话术后（如 vid- 的填写链接引导）。
     prefix_reply: 可选，放在转人工话术**前面**（如 LLM 投降时先给的一句简单回答/方向）。
+    image_url/image_desc: 可选，用户发来的图片公网URL和AI识别结果，告警群显示用。
     """
     user_reply, handler_line = _build_user_reply(raw_text)
     if prefix_reply:
@@ -517,6 +518,8 @@ def _do_escalate(rec, sender: str, sender_name: str, raw_text: str,
             recent_dialog=recent_dialog,
             issue_summary="",            # 不再用 AI 总结（容易误导，已撤销）
             at_all=True,
+            image_url=image_url,
+            image_desc=image_desc,
         )
     except Exception as e:
         log.exception("alert dispatch failed: %s", e)
@@ -619,19 +622,31 @@ def handle(sender: str, raw_text: str, sender_name: str = "") -> str:
     # 0.前) 非文本消息（图片/语音/视频/文件）→ 直接转人工
     # bot.py 检测到这类消息时会传 [NON_TEXT:xxx] 前缀标记
     if raw_text.startswith("[NON_TEXT:"):
-        # 解析媒体类型
-        m_type = "媒体"
+        # 解析标记：[NON_TEXT:image|url=xxx|desc=yyy] 中间段含管道符
+        inner = ""
         try:
-            m_type = raw_text.split(":", 1)[1].split("]", 1)[0]
+            inner = raw_text.split(":", 1)[1].split("]", 1)[0]   # image|url=xxx|desc=yyy
         except Exception:
             pass
+        parts = inner.split("|")
+        m_type = parts[0] if parts else "媒体"
+        img_url = img_desc = ""
+        for p in parts[1:]:
+            if p.startswith("url="):
+                img_url = p[4:]
+            elif p.startswith("desc="):
+                img_desc = p[5:]
         type_label = {
             "image": "图片", "audio": "语音", "video": "视频",
             "file": "文件", "richText": "富文本"
         }.get(m_type, m_type or "媒体")
+        # 图片：若有 AI 识别结果，并进转人工原因，让人工一眼看到内容
+        reason = f"用户发了{type_label}，机器人无法识别，转人工查看"
+        if m_type == "image" and img_desc:
+            reason = f"用户发了图片（AI识别：{img_desc}），转人工查看"
         return _do_escalate(rec, sender, sender_name, raw_text,
-                            reason=f"用户发了{type_label}，机器人无法识别，转人工查看",
-                            level="warn")
+                            reason=reason, level="warn",
+                            image_url=img_url, image_desc=img_desc)
 
     # 0) 空消息保护：群里 @ 机器人没说话，或防抖只合并了空消息，直接友好提示
     # 不调 LLM，避免它用历史对话上下文胡乱发挥

@@ -69,6 +69,38 @@ def _register_group(msg: ChatbotMessage) -> None:
         db.close()
 
 
+def _handle_user_image(msg: ChatbotMessage) -> str:
+    """用户发来图片：下载+存图+(可选)AI识别，把结果编进 [NON_TEXT:image] 标记。
+
+    标记格式（pipeline 透传、alert 解析）：
+      [NON_TEXT:image|url=<公网URL>|desc=<AI识别,可空>] 用户发了图片
+    下载失败则退回原始无内容标记，保证流程不中断。
+    """
+    try:
+        codes = msg.get_image_list() or []
+    except Exception:
+        codes = []
+    if not codes:
+        return "[NON_TEXT:image] 用户发了图片"
+    try:
+        from .services import image_intake
+        r = image_intake.intake_image(codes[0])   # 取第一张（多图场景先处理首张）
+    except Exception as e:
+        log.exception("处理用户图片失败: %s", e)
+        return "[NON_TEXT:image] 用户发了图片（下载失败）"
+    if not r.get("ok"):
+        log.warning("用户图片下载失败: %s", r.get("error"))
+        return "[NON_TEXT:image] 用户发了图片（下载失败）"
+    url = r.get("public_url", "")
+    desc = (r.get("vision_desc") or "").replace("|", "/").replace("]", "）")[:120]
+    extra = f"|url={url}"
+    if desc:
+        extra += f"|desc={desc}"
+    n = len(codes)
+    tail = f"（共{n}张，已处理首张）" if n > 1 else ""
+    return f"[NON_TEXT:image{extra}] 用户发了图片{tail}"
+
+
 class _Handler(ChatbotHandler):
     async def process(self, callback: dingtalk_stream.CallbackMessage):
         msg = ChatbotMessage.from_dict(callback.data)
@@ -86,7 +118,7 @@ class _Handler(ChatbotHandler):
         msgtype = (msg.message_type or "").strip()
         if not text:
             if msgtype == "picture" or msg.image_content is not None:
-                text = "[NON_TEXT:image] 用户发了图片"
+                text = _handle_user_image(msg)
             elif msgtype == "richText" or msg.rich_text_content is not None:
                 # 富文本里可能纯图、纯文字、图文混排
                 # 尝试提取里面的文字部分

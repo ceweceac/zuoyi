@@ -42,7 +42,9 @@ def send_alert(*,
                recent_dialog: str = "",       # 最近几轮的对话上下文（已格式化）
                issue_summary: str = "",       # AI 总结的"用户到底想问什么"
                at_mobiles: list = None,
-               at_all: bool = False) -> bool:
+               at_all: bool = False,
+               image_url: str = "",          # 用户发来的图片URL（钉钉可拉则显示）
+               image_desc: str = "") -> bool:
     """推送到钉钉群机器人。返回是否成功。"""
     webhook = (settings.alert_webhook or "").strip()
     if not webhook:
@@ -79,6 +81,19 @@ def send_alert(*,
     # 用户的核心问题（本次连续会话中最早问的那一句，真实原话）
     if user_text:
         md += f"#### ❓ 用户原始问题：\n\n> {user_text}\n\n"
+
+    # 用户发来的图片：AI识别结果 + 图片显示
+    if image_desc:
+        md += f"#### 🖼 图片AI识别：\n\n> {image_desc}\n\n"
+    if image_url:
+        if image_url.startswith("http://") or image_url.startswith("https://"):
+            # 公网可达 → 钉钉能拉取，直接显示图片
+            md += f"![用户图片]({image_url})\n\n"
+        else:
+            # 相对路径（未配 public_base_url）→ 钉钉拉不到，给后台链接兜底
+            admin = (settings.admin_url or "").strip().rstrip("/")
+            link = f"{admin}{image_url}" if admin else image_url
+            md += f"> ⚠️ 用户发了图片，但未配置公网访问地址，群里无法显示。[点此查看]({link})\n\n"
 
     # 完整对话历史（仅本次会话的真实条数）
     if recent_dialog:

@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     llm_timeout: int = 15
     llm_temperature: float = 0.7
 
+    # === 视觉模型（多模态，用于识别用户发来的图片内容）===
+    # 留空 → 不启用图片 AI 识别（仍会下载+存图+告警群显示，只是没有"AI识别:xxx"）
+    # 配一个 OpenAI 兼容的多模态模型即可，如 qwen-vl-max / gpt-4o / gemini-2.0-flash
+    vision_enabled: bool = False
+    vision_base_url: str = ""
+    vision_api_key: str = ""
+    vision_model: str = ""
+
     # 机器人人设（性格部分，独立于知识库规则，让回答更像真人）
     bot_persona: str = (
         "你叫小灵，是一个温暖、接地气的内部小伙伴助手，不是冷冰冰的客服。\n"

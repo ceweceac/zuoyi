@@ -21,6 +21,61 @@ log = logging.getLogger(__name__)
 
 _TOKEN_URL = "https://oapi.dingtalk.com/gettoken"
 _UPLOAD_URL = "https://oapi.dingtalk.com/media/upload"
+# 新版 OpenAPI：用 downloadCode 换机器人收到消息的文件下载链接
+_FILE_DOWNLOAD_URL = "https://api.dingtalk.com/v1.0/robot/messageFiles/download"
+
+
+def _get_access_token_v2() -> str:
+    """获取新版 OpenAPI 的 access_token（放 header x-acs-dingtalk-access-token）。
+    新版接口和老版 gettoken 拿到的是同一个 token，直接复用。"""
+    return _get_access_token()
+
+
+def download_user_image(download_code: str) -> dict:
+    """把用户私聊/群里发来的图片 downloadCode 换成临时下载 URL，并下载图片字节。
+
+    流程（见 https://open.dingtalk.com/document/isvapp/download-the-file-content-of-the-robot-receiving-message）：
+      downloadCode + robotCode → robot/messageFiles/download → downloadUrl → GET 拿字节
+
+    robotCode 优先用 dingtalk_robot_code，留空回退 dingtalk_client_id。
+    返回 {ok, content(bytes), download_url, error}。
+    """
+    if not download_code:
+        return {"ok": False, "error": "download_code 为空"}
+    robot_code = (settings.dingtalk_robot_code or settings.dingtalk_client_id or "").strip()
+    if not robot_code:
+        return {"ok": False, "error": "robotCode 未配置（dingtalk_robot_code/client_id 都为空）"}
+    try:
+        token = _get_access_token_v2()
+    except Exception as e:
+        return {"ok": False, "error": f"access_token 失败: {e}"}
+
+    try:
+        r = httpx.post(
+            _FILE_DOWNLOAD_URL,
+            headers={"x-acs-dingtalk-access-token": token, "Content-Type": "application/json"},
+            json={"robotCode": robot_code, "downloadCode": download_code},
+            timeout=15,
+        )
+        data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception as e:
+        log.exception("download_user_image: 换取下载URL失败")
+        return {"ok": False, "error": f"换取下载URL失败: {e}"}
+
+    download_url = (data or {}).get("downloadUrl") or ""
+    if r.status_code != 200 or not download_url:
+        log.warning("download_user_image failed: status=%s body=%s", r.status_code, r.text[:300])
+        return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:200]}"}
+
+    # 下载图片字节
+    try:
+        ir = httpx.get(download_url, timeout=30)
+        if ir.status_code != 200:
+            return {"ok": False, "error": f"下载图片 HTTP {ir.status_code}", "download_url": download_url}
+        return {"ok": True, "content": ir.content, "download_url": download_url}
+    except Exception as e:
+        log.exception("download_user_image: 下载字节失败")
+        return {"ok": False, "error": f"下载字节失败: {e}", "download_url": download_url}
 
 # 复用 broadcaster 的 token 缓存机制：避免每次重新拉
 # 加锁防多线程并发刷新（与 broadcaster.py 同样的考虑）
