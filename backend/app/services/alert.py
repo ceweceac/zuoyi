@@ -86,14 +86,19 @@ def send_alert(*,
     if image_desc:
         md += f"#### 🖼 图片AI识别：\n\n> {image_desc}\n\n"
     if image_url:
-        if image_url.startswith("http://") or image_url.startswith("https://"):
-            # 公网可达 → 钉钉能拉取，直接显示图片
+        is_http = image_url.startswith("http://") or image_url.startswith("https://")
+        intranet = getattr(settings, "public_base_url_is_intranet", True)
+        if is_http and not intranet:
+            # 公网可达 → 钉钉能拉取，告警卡片直接嵌图显示
             md += f"![用户图片]({image_url})\n\n"
+        elif is_http and intranet:
+            # 内网地址 → 钉钉服务器拉不到（嵌图会裂），给同事可点击的链接（内网能开）
+            md += f"#### 🖼 用户发来图片\n\n> 钉钉卡片无法直接显示内网图片，[👉 点此查看大图]({image_url})（需在公司内网打开）\n\n"
         else:
-            # 相对路径（未配 public_base_url）→ 钉钉拉不到，给后台链接兜底
+            # 相对路径（未配 public_base_url）→ 用 admin_url 兜底拼链接
             admin = (settings.admin_url or "").strip().rstrip("/")
             link = f"{admin}{image_url}" if admin else image_url
-            md += f"> ⚠️ 用户发了图片，但未配置公网访问地址，群里无法显示。[点此查看]({link})\n\n"
+            md += f"> ⚠️ 用户发了图片，但未配置访问地址。[点此查看]({link})\n\n"
 
     # 完整对话历史（仅本次会话的真实条数）
     if recent_dialog:

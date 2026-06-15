@@ -143,6 +143,10 @@ class Settings(BaseSettings):
     # 留空时 /files/ 走相对路径，仅本地预览可用，钉钉群里会失败。
     # 生产环境填公网域名，如 https://qa-bot.example.com
     public_base_url: str = ""
+    # public_base_url 是否为内网地址（如 192.168.x.x）。
+    # 内网地址钉钉服务器拉不到 → 告警卡片里不嵌图（会裂图），改成给同事可点击的链接。
+    # 公网地址（钉钉能访问）设 False，告警卡片直接嵌图显示。
+    public_base_url_is_intranet: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
