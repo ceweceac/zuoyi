@@ -700,27 +700,9 @@ def handle(sender: str, raw_text: str, sender_name: str = "") -> str:
         reply = reply_tpl.replace("{link}", link)
         rec.answer = reply
         rec.answer_level = "B"
-        rec.raw_llm_answer = f"[充值引导] 命中『{hit_kw}』→ 发链接 {link}，不调 LLM，已同步告警群"
-        conv_id = audit.write(rec)
-        # 同步告警（不影响给用户发链接；告警失败也不阻断）
-        try:
-            first_question, recent_dialog = _format_recent_dialog(sender, raw_text)
-            alert.send_alert(
-                level="warn",
-                title=f"用户咨询充值/账号（命中『{hit_kw}』）",
-                user_text=first_question,
-                sender_name=sender_name,
-                sender_id=sender,
-                bot_reply=reply,
-                reason=f"用户咨询充值/账号事宜（命中『{hit_kw}』），已自动发文档链接，请人工跟进确认",
-                handler_hint="",
-                conversation_id=conv_id,
-                recent_dialog=recent_dialog,
-                issue_summary="",
-                at_all=True,
-            )
-        except Exception as e:
-            log.exception("recharge alert dispatch failed: %s", e)
+        rec.raw_llm_answer = f"[充值引导] 命中『{hit_kw}』→ 发链接 {link}，不调 LLM"
+        audit.write(rec)
+        # 只给用户发链接，不再 @所有人通知告警群（用户自助即可，避免骚扰）
         return reply
 
     # 1.55) 业务 ID 模式（如 vid-xxxx）→ 用户问的是具体业务记录，标准 QA 答不上来，直接转人工
