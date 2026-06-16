@@ -11,6 +11,7 @@
 """
 import json
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -261,6 +262,46 @@ def start():
                  getattr(settings, "daily_brief_enabled", False))
     except Exception as e:
         log.exception("挂载每日简报 job 失败: %s", e)
+
+    # 失败回流分析（语义诊断未命中→建议补tag/新增QA）。开关 failure_replay_enabled。
+    # 依赖 ollama+向量索引，用子进程跑脚本（隔离特殊依赖，不污染主进程）。
+    try:
+        fr_cron = (getattr(settings, "failure_replay_cron", "") or "0 3 * * 1").strip()
+        m, h, dom, mon, dow = fr_cron.split()
+        _scheduler.add_job(
+            _run_failure_replay,
+            CronTrigger(minute=m, hour=h, day=dom, month=mon, day_of_week=dow, timezone=TZ),
+            id="failure_replay", replace_existing=True,
+        )
+        log.info("失败回流 job 已挂载: cron=%s (enabled=%s)", fr_cron,
+                 getattr(settings, "failure_replay_enabled", False))
+    except Exception as e:
+        log.exception("挂载失败回流 job 失败: %s", e)
+
+
+def _run_failure_replay():
+    """周期跑 failure_replay.py 生成失败回流报告（子进程 + ollama 环境变量）。"""
+    from ..config import settings
+    if not getattr(settings, "failure_replay_enabled", False):
+        log.info("failure_replay_enabled=False，跳过失败回流")
+        return
+    import subprocess
+    from pathlib import Path
+    backend = Path(__file__).resolve().parent.parent.parent
+    script = backend.parent / "scripts" / "failure_replay.py"
+    env = dict(os.environ)
+    env.update({
+        "EMB_BACKEND": "ollama", "EMB_MODEL": "bge-m3:latest",
+        "QABOT_ALLOW_WEAK_JWT": "1", "QABOT_SKIP_CHARCHECK": "1",
+    })
+    try:
+        r = subprocess.run(
+            [str(backend / ".venv" / "bin" / "python"), "-u", str(script), "--limit", "30"],
+            cwd=str(backend), env=env, capture_output=True, text=True, timeout=600,
+        )
+        log.info("失败回流跑完 rc=%s: %s", r.returncode, (r.stdout or "")[-200:])
+    except Exception as e:
+        log.exception("失败回流子进程失败: %s", e)
 
 
 def stop():

@@ -49,6 +49,8 @@ EDITABLE_KEYS = [
     "vid_reply",
     "daily_brief_enabled",
     "daily_brief_cron",
+    "failure_replay_enabled",
+    "failure_replay_cron",
     "public_base_url_is_intranet",
     "vision_enabled",
     "vision_base_url",

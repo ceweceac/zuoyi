@@ -132,6 +132,10 @@ class Settings(BaseSettings):
     daily_brief_enabled: bool = False
     daily_brief_cron: str = "0 9 * * *"   # 默认每天 9:00（Asia/Shanghai）
 
+    # === 失败回流分析（语义诊断未命中→建议补tag/新增QA，依赖 ollama+向量索引）===
+    failure_replay_enabled: bool = False
+    failure_replay_cron: str = "0 3 * * 1"   # 默认每周一 3:00（避开高峰）
+
     # === 数据库 ===
     database_url: str = "sqlite:///./data/qabot.db"
 
