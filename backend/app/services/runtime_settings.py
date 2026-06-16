@@ -47,10 +47,17 @@ EDITABLE_KEYS = [
     "recharge_reply",
     "vid_link",
     "vid_reply",
+    "daily_brief_enabled",
+    "daily_brief_cron",
+    "public_base_url_is_intranet",
+    "vision_enabled",
+    "vision_base_url",
+    "vision_api_key",
+    "vision_model",
 ]
 
 # 这些字段在 DB 里加密存、UI 上脱敏展示
-SECRET_KEYS = {"llm_api_key", "dingtalk_client_secret", "alert_secret"}
+SECRET_KEYS = {"llm_api_key", "dingtalk_client_secret", "alert_secret", "vision_api_key"}
 
 
 def _coerce(key: str, raw: str):

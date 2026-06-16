@@ -245,6 +245,23 @@ def start():
             log.exception("load schedule %s failed: %s", sid, e)
     log.info("broadcast scheduler started, loaded %d schedules", len(ids))
 
+    # 每日运营简报（主动推送，借鉴 Hermes Cron）。开关在 settings.daily_brief_enabled。
+    # 无论开关状态都挂 job，job 内部再判断开关（这样后台改开关无需重启即可下次生效）。
+    from ..config import settings
+    from . import daily_brief
+    try:
+        cron_expr = (getattr(settings, "daily_brief_cron", "") or "0 9 * * *").strip()
+        m, h, dom, mon, dow = cron_expr.split()
+        _scheduler.add_job(
+            daily_brief.send_daily_brief,
+            CronTrigger(minute=m, hour=h, day=dom, month=mon, day_of_week=dow, timezone=TZ),
+            id="daily_brief", replace_existing=True,
+        )
+        log.info("每日简报 job 已挂载: cron=%s (enabled=%s)", cron_expr,
+                 getattr(settings, "daily_brief_enabled", False))
+    except Exception as e:
+        log.exception("挂载每日简报 job 失败: %s", e)
+
 
 def stop():
     global _scheduler

@@ -127,6 +127,11 @@ class Settings(BaseSettings):
     # 追加在转人工话术后的填写引导（{link} 替换成 vid_link）
     vid_reply: str = "另外你把这个 ID 的详细情况填一下这个表，方便我们快速处理 👉 {link}"
 
+    # === 每日运营简报（主动推送，借鉴 Hermes Cron 理念）===
+    # 开启后每天定时往 alert_webhook 推一条运营日报（对话量/转人工率/未命中TOP/待审）
+    daily_brief_enabled: bool = False
+    daily_brief_cron: str = "0 9 * * *"   # 默认每天 9:00（Asia/Shanghai）
+
     # === 数据库 ===
     database_url: str = "sqlite:///./data/qabot.db"
 
