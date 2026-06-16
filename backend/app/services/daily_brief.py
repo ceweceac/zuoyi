@@ -73,7 +73,7 @@ def send_daily_brief():
     except Exception as e:
         log.exception("生成每日简报失败")
         return
-    # 复用 alert 的 webhook 发送（含签名 + SSRF 校验），用 info 级避免 @所有人
+    # 复用 alert 的 webhook 发送（含签名 + SSRF 校验）
     from . import alert
     try:
         alert.send_alert(
@@ -85,7 +85,7 @@ def send_daily_brief():
             bot_reply="",
             reason="每日运营简报（自动推送）",
             recent_dialog=md,        # 把简报放在对话历史位置渲染
-            at_all=False,            # 日报不打扰，不 @所有人
+            at_all=True,             # 日报 @所有人，确保群成员看到
         )
         log.info("每日简报已推送")
     except Exception as e:
