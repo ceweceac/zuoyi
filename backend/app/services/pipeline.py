@@ -381,6 +381,52 @@ def _count_recent_unsolved_messages(sender: str, window_minutes: int = 2) -> int
     return n
 
 
+def _detect_blind_spot(current_text: str, window_hours: int = 6, threshold: int = 3) -> int:
+    """实时盲区检测（借鉴 Hermes 事件驱动："世界变了立即响应"）。
+
+    统计全局（不限单个用户）近 window_hours 小时内，与当前问题词级相似、
+    且都未命中 KB（escalated 或 B 级兜底）的问题数量。达到 threshold 说明这是
+    一个多人都问、机器人都答不上来的高频盲区 —— 该立即提醒运营补 KB，
+    而不是等每日简报才发现。
+
+    返回相似的未命中问题数（含当前这条）。0 表示无盲区（如关键词为空）。
+    """
+    cur_tokens = _tokens(current_text)
+    if not cur_tokens or len(current_text.strip()) < 4:
+        return 0
+    from ..db import SessionLocal, Conversation
+    from sqlalchemy import desc
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    since = now - timedelta(hours=window_hours)
+    db = SessionLocal()
+    try:
+        # 近 window_hours 内未命中的问题（escalated=1 或 B 级），全局
+        rows = (
+            db.query(Conversation.question, Conversation.answer_level, Conversation.escalated)
+            .filter(Conversation.created_at >= since)
+            .order_by(desc(Conversation.id))
+            .limit(300)
+            .all()
+        )
+    finally:
+        db.close()
+    count = 1  # 当前这条
+    for q, level, esc in rows:
+        if not q or q.startswith("[NON_TEXT"):
+            continue
+        if esc != "1" and (level or "") != "B":
+            continue   # 命中了 KB 的不算盲区
+        ht = _tokens(q)
+        if not ht:
+            continue
+        inter = len(cur_tokens & ht)
+        union = len(cur_tokens | ht)
+        if union and inter / union >= 0.4:   # 同主题
+            count += 1
+    return count
+
+
 def _count_recent_unresolved(sender: str, current_text: str) -> int:
     """
     判断用户是否在连续追问同一类问题。规则：
@@ -895,9 +941,16 @@ def handle(sender: str, raw_text: str, sender_name: str = "") -> str:
     if "<<ESCALATE>>" in (r.text or ""):
         lead_in = (r.text or "").split("<<ESCALATE>>", 1)[0].strip()
         rec.raw_llm_answer = f"[LLM 投降转人工] 前置语:{lead_in[:60]!r} 原始:{r.text[:120]}"
+        # 实时盲区检测：同类问题近6h被多人问且都没答上 → 这是高频盲区，提升告警级别+提示补KB
+        reason = "知识库无对应答案，机器人答不上来，转人工"
+        level = "warn"
+        spot = _detect_blind_spot(raw_text)
+        if spot >= 3:
+            reason = f"⚠️ 高频盲区：近6h已有 {spot} 人问同类问题都未命中KB，建议优先补充知识库 → {reason}"
+            level = "urgent"
+            log.warning("blind spot detected: q=%r count=%d", raw_text, spot)
         return _do_escalate(rec, sender, sender_name, raw_text,
-                            reason="知识库无对应答案，机器人答不上来，转人工",
-                            level="warn", prefix_reply=lead_in)
+                            reason=reason, level=level, prefix_reply=lead_in)
 
     # 3.6) 幻觉检测：LLM 兜底回答里若提到知识库里查无此物的"模型名/产品名"
     #      （如把不存在的 seedream 当图片模型推荐），说明 LLM 在编造事实 → 转人工，
