@@ -84,18 +84,56 @@ _SUB_HINTS = {
 }
 
 
+def _find_scene(use, sub_keyword):
+    """按 use(可空) + 子分类名包含 sub_keyword 找官方场景。"""
+    for sc in _OFFICIAL_SCENES:
+        if (not use or sc["use"] == use) and sub_keyword in sc["sub"]:
+            return sc
+    # 不限用途再找一次
+    for sc in _OFFICIAL_SCENES:
+        if sub_keyword in sc["sub"]:
+            return sc
+    return None
+
+
+# 强信号 → 直接定位场景（优先级最高，不参与通用竞争）。
+# 这些是明确的"特殊格式/操作"，关键词出现即确定，避免被"人物/场景"等通用词抢。
+_STRONG_SIGNALS = [
+    # (关键词组, use, 子分类keyword)  —— 顺序敏感，先匹配先生效
+    (("25宫格", "二十五宫格"), None, "25宫格"),
+    (("九宫格", "9宫格", "9格"), "文生文", "九宫格"),
+    (("四宫格", "4宫格", "4格"), "文生图", "四宫格"),
+    (("全景", "720", "vr全景", "panorama"), "图生图", "全景"),
+    (("光影校正", "电影级光影"), "图生图", "光影校正"),
+    (("3秒前", "三秒前", "推演前", "往前推"), "图生图", "3秒前"),
+    (("5秒后", "五秒后", "推演后", "往后推"), "图生图", "5秒后"),
+    # 图生图操作类（"换/迁移/调色/改成"+图）
+    (("风格迁移", "迁移风格", "换风格", "换成", "改成"), "图生图", "风格迁移"),
+    (("调色", "色调", "调成", "影调"), "图生图", "色调调整"),
+]
+
+
 def _pick_official_scene(text: str):
     """从用户描述识别官方场景。返回 scene dict 或 None（让上层退回内置场景）。"""
     if not _OFFICIAL_SCENES:
         return None
     s = text.lower()
-    # 1) 先定用途
+
+    # 0) 强信号优先：特殊格式/操作类，命中即定位
+    for keys, use, sub_kw in _STRONG_SIGNALS:
+        if any(k in s for k in keys):
+            sc = _find_scene(use, sub_kw)
+            if sc:
+                return sc
+
+    # 1) 定用途（图生图信号优先——有"图/原图/参考图/这张"且含操作词时）
     use = None
     for u, hints in _USE_HINTS.items():
         if any(h in s for h in hints):
             use = u
             break
-    # 2) 在该用途下按子分类命中选；命中子分类直接返回
+
+    # 2) 在该用途下按子分类命中数选最高
     cands = [sc for sc in _OFFICIAL_SCENES if (not use or sc["use"] == use)]
     best, best_hits = None, 0
     for sc in cands:
@@ -105,7 +143,7 @@ def _pick_official_scene(text: str):
             best, best_hits = sc, hits
     if best and best_hits >= 1:
         return best
-    # 3) 子分类没命中，但定了用途 → 用该用途第一条作兜底
+    # 3) 子分类没命中，但定了用途 → 用该用途第一条兜底
     if use and cands:
         return cands[0]
     return None
