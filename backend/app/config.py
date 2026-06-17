@@ -136,6 +136,9 @@ class Settings(BaseSettings):
     failure_replay_enabled: bool = False
     failure_replay_cron: str = "0 3 * * 1"   # 默认每周一 3:00（避开高峰）
 
+    # === 提示词优化（用户发创作类prompt→帮优化，识别从严避免误判）===
+    prompt_optimize_enabled: bool = False
+
     # === 数据库 ===
     database_url: str = "sqlite:///./data/qabot.db"
 

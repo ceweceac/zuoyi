@@ -220,6 +220,48 @@ def rephrase(user_text: str, kb_answer: str, history: list = None) -> LlmResult:
                          success=False, url=url, error=str(e))
 
 
+def raw_chat(system_prompt: str, user_prompt: str, temperature: float = 0.6,
+             max_tokens: int = 800) -> LlmResult:
+    """通用 LLM 单轮调用（自定义 system+user）。供提示词优化等独立任务用。
+    失败时 success=False、text 为空，调用方据此决定降级。"""
+    _maybe_reload_settings()
+    t0 = time.time()
+    if not settings.llm_enabled or not settings.llm_api_key or not settings.llm_base_url:
+        return LlmResult(text="", latency_ms=0, success=False, error="llm_disabled")
+    url = settings.llm_base_url.rstrip("/") + "/chat/completions"
+    try:
+        payload = {
+            "model": settings.llm_model,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
+        with httpx.Client(timeout=min(settings.llm_timeout, 25)) as cli:
+            r = cli.post(url, json=payload, headers=headers)
+        cost = int((time.time() - t0) * 1000)
+        if r.status_code != 200:
+            return LlmResult(text="", latency_ms=cost, success=False,
+                             url=url, status=r.status_code, error=r.text[:500])
+        data = r.json()
+        usage = data.get("usage") or {}
+        content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+        return LlmResult(
+            text=content, latency_ms=cost, success=bool(content),
+            url=url, status=r.status_code,
+            prompt_tokens=usage.get("prompt_tokens", 0) or 0,
+            completion_tokens=usage.get("completion_tokens", 0) or 0,
+            total_tokens=usage.get("total_tokens", 0) or 0,
+        )
+    except Exception as e:
+        log.exception("raw_chat error: %s", e)
+        return LlmResult(text="", latency_ms=int((time.time() - t0) * 1000),
+                         success=False, url=url, error=str(e))
+
+
 @dataclass
 class JudgeResult:
     """LLM 裁判的结果。"""

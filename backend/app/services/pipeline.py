@@ -809,6 +809,21 @@ def handle(sender: str, raw_text: str, sender_name: str = "") -> str:
         return _do_escalate(rec, sender, sender_name, raw_text,
                             reason=f"用户 2 分钟内有 {burst_unsolved} 条问题机器人未能解答", level="warn")
 
+    # 1.9) 提示词优化：用户发来一段创作类 prompt（够长+创作特征词+非疑问句）→ 帮优化。
+    #      识别从严，宁漏不误；不是 prompt 则继续走下面正常 KB/LLM 流程。
+    if getattr(settings, "prompt_optimize_enabled", False):
+        from . import prompt_optimizer
+        if prompt_optimizer.looks_like_prompt(raw_text):
+            opt = prompt_optimizer.optimize(raw_text)
+            if opt:
+                reply = "帮你把提示词完善了一版，可以参考：\n\n" + opt
+                rec.answer = reply
+                rec.answer_level = "B"
+                rec.raw_llm_answer = f"[提示词优化] 原文 {len(raw_text)} 字 → 已优化"
+                audit.write(rec)
+                return reply
+            # 优化失败（LLM不可用等）→ 不拦截，继续走正常流程
+
     # 2) 知识库匹配（两阶段：dice 粗筛 → LLM 裁判精选）
     matched_item = None
     matched_score = 0.0

@@ -51,6 +51,7 @@ EDITABLE_KEYS = [
     "daily_brief_cron",
     "failure_replay_enabled",
     "failure_replay_cron",
+    "prompt_optimize_enabled",
     "public_base_url_is_intranet",
     "vision_enabled",
     "vision_base_url",
