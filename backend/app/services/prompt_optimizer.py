@@ -7,12 +7,39 @@
   风格优化，而不是泛泛发挥。
 - 识别从严：必须像 prompt（够长 + 创作特征词 + 非疑问句），宁漏不误。
 """
+import json
 import logging
 import re
+from pathlib import Path
 
 from ..config import settings
 
 log = logging.getLogger(__name__)
+
+# 专业素材库（光影/运镜/情绪等官方提示词表述，来源「功能提示词收集」文档）。
+# 优化时若用户 prompt 涉及这些专业概念，注入对应官方描述，让 LLM 用专业表述而非自编。
+_MATERIALS = {}
+try:
+    _mat_path = Path(__file__).resolve().parent / "prompt_materials.json"
+    if _mat_path.exists():
+        _MATERIALS = json.loads(_mat_path.read_text(encoding="utf-8"))
+except Exception as _e:
+    logging.getLogger(__name__).warning("加载 prompt_materials 失败: %s", _e)
+
+
+def _match_materials(text: str, limit: int = 3) -> str:
+    """从用户 prompt 里找命中的专业概念，返回对应官方描述（最多 limit 条）。"""
+    if not _MATERIALS:
+        return ""
+    hits = []
+    for name, desc in _MATERIALS.items():
+        # 概念名出现在 prompt 里（如"逆光""推镜头""伦勃朗"）
+        key = name.split("/")[0]
+        if key and key in text:
+            hits.append(f"- {name}：{desc}")
+        if len(hits) >= limit:
+            break
+    return "\n".join(hits)
 
 _CREATIVE_HINTS = (
     "画面", "镜头", "角色", "人物", "场景", "风格", "光影", "氛围", "构图",
@@ -102,6 +129,10 @@ def optimize(text: str) -> str:
     if scene.get("example_in"):
         example = (f"\n参考示范（{scene['name']}类）：\n"
                    f"输入：{scene['example_in']}\n输出：\n{scene['example_out']}\n")
+    # 命中的专业素材（光影/运镜/情绪官方表述）→ 注入，让优化用专业术语
+    materials = _match_materials(body)
+    mat_block = (f"\n参考专业表述（命中的概念，优化时可融入）：\n{materials}\n"
+                 if materials else "")
     sys_prompt = (
         f"你是 DramaTV 的提示词优化专家，专门优化 AI 生成图片/视频的提示词。"
         f"当前这条属于「{scene['name']}」类，优化时必须补全这些维度：{scene['standard']}。\n"
@@ -110,7 +141,7 @@ def optimize(text: str) -> str:
         f"2. 优化后的提示词要具体、可直接用于生成，避免空泛形容词堆砌；\n"
         f"3. 用中文，不要 markdown；\n"
         f"4. 严格按示范的格式输出。"
-        f"{example}"
+        f"{example}{mat_block}"
     )
     user_prompt = (
         f"请按【优化后】+【补充了】两段格式优化下面这条「{scene['name']}」类提示词：\n\n"
