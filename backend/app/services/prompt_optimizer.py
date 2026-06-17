@@ -41,6 +41,75 @@ def _match_materials(text: str, limit: int = 3) -> str:
             break
     return "\n".join(hits)
 
+
+# ── 官方场景指令库（26条专家级 system prompt，来源「预设提示词分类整理」）──
+# 用户发简短描述 → 识别用途+子分类 → 用对应官方指令优化。
+_OFFICIAL_SCENES = []
+try:
+    _sc_path = Path(__file__).resolve().parent / "optimizer_scenes.json"
+    if _sc_path.exists():
+        _OFFICIAL_SCENES = json.loads(_sc_path.read_text(encoding="utf-8"))
+except Exception as _e:
+    logging.getLogger(__name__).warning("加载 optimizer_scenes 失败: %s", _e)
+
+# 用途关键词（判断文生文/图/视频/图生图）
+_USE_HINTS = {
+    "文生视频": ("视频", "镜头", "运镜", "动作场面", "追逐", "打斗", "短片", "动态", "秒"),
+    "图生图": ("这张图", "原图", "参考图", "风格迁移", "换风格", "调色", "色调", "推演", "改成"),
+    "文生图": ("画", "图", "人物", "角色", "场景", "海报", "画风", "氛围", "特效", "全景", "宫格"),
+    "文生文": ("文案", "改写", "润色", "扩写", "压缩", "口播", "台词", "塑造", "写实角色"),
+}
+# 子分类关键词（命中则优先选该子分类的官方指令）
+_SUB_HINTS = {
+    "人物/角色": ("人物", "角色", "男主", "女主", "剑客", "少年", "少女", "人设"),
+    "场景/环境": ("场景", "环境", "街道", "森林", "房间", "城市", "空间"),
+    "情节/动作": ("动作", "奔跑", "打斗", "追逐", "情节"),
+    "画风/风格": ("画风", "风格", "水墨", "赛博", "二次元", "写实风"),
+    "氛围": ("氛围", "情绪", "意境"),
+    "特效": ("特效", "光效", "粒子", "爆炸", "能量"),
+    "动作场面": ("动作场面", "打斗", "追逐", "武打"),
+    "情感场景": ("情感", "对话", "哭", "拥抱", "告白"),
+    "叙事场景": ("叙事", "剧情", "故事", "冲突"),
+    "氛围短片": ("氛围短片", "意境", "唯美"),
+    "风格迁移": ("风格迁移", "换风格", "迁移"),
+    "色调调整": ("色调", "调色", "影调"),
+    "四宫格": ("四宫格", "4宫格", "4格"),
+    "九宫格": ("九宫格", "9宫格", "9格"),
+    "25宫格连贯分镜": ("25宫格", "分镜"),
+    "全景生成": ("全景", "720", "vr"),
+    "电影级光影校正": ("光影校正", "打光", "光影", "逆光", "伦勃朗"),
+    "内容改写": ("改写", "润色", "扩写", "压缩文案"),
+    "场景描述": ("场景描述",),
+    "人物塑造": ("人物塑造", "人设文案"),
+}
+
+
+def _pick_official_scene(text: str):
+    """从用户描述识别官方场景。返回 scene dict 或 None（让上层退回内置场景）。"""
+    if not _OFFICIAL_SCENES:
+        return None
+    s = text.lower()
+    # 1) 先定用途
+    use = None
+    for u, hints in _USE_HINTS.items():
+        if any(h in s for h in hints):
+            use = u
+            break
+    # 2) 在该用途下按子分类命中选；命中子分类直接返回
+    cands = [sc for sc in _OFFICIAL_SCENES if (not use or sc["use"] == use)]
+    best, best_hits = None, 0
+    for sc in cands:
+        hints = _SUB_HINTS.get(sc["sub"], (sc["sub"],))
+        hits = sum(1 for h in hints if h in s)
+        if hits > best_hits:
+            best, best_hits = sc, hits
+    if best and best_hits >= 1:
+        return best
+    # 3) 子分类没命中，但定了用途 → 用该用途第一条作兜底
+    if use and cands:
+        return cands[0]
+    return None
+
 _CREATIVE_HINTS = (
     "画面", "镜头", "角色", "人物", "场景", "风格", "光影", "氛围", "构图",
     "特写", "全景", "近景", "远景", "运镜", "推进", "拉远", "服装", "造型",
@@ -124,6 +193,26 @@ def optimize(text: str) -> str:
         return ""
     body = re.sub(r"(优化提示词|优化这个提示词|帮我优化prompt|帮我改提示词|润色提示词|完善提示词)[:：]?",
                   "", text).strip() or text
+
+    # 优先用官方场景指令（26条专家级），命中则直接用它优化，质量最高
+    official = _pick_official_scene(body)
+    if official:
+        sys_prompt = (
+            official["system"]
+            + "\n\n【输出要求】先给出优化后的成品提示词，再用一行『补充了：』简述补充了哪些维度。"
+              "用中文，不要 markdown。"
+        )
+        user_prompt = f"用户输入：{body}\n\n请按上面的角色与任务优化。"
+        try:
+            from . import llm
+            r = llm.raw_chat(sys_prompt, user_prompt, temperature=0.7, max_tokens=1200)
+            if r and getattr(r, "text", ""):
+                log.info("prompt optimize via official scene: %s/%s", official["use"], official["sub"])
+                return r.text.strip()
+        except Exception as e:
+            log.warning("official optimize 失败，退回内置: %s", e)
+
+    # 兜底：官方场景没命中 → 用内置 3 类
     scene = _pick_scene(body)
     example = ""
     if scene.get("example_in"):
