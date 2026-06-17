@@ -55,6 +55,10 @@ def _get_kb_cache():
                 QaItem.status == "approved",
                 QaItem.enabled == "1",
                 QaItem.deleted == "0",
+                # 数据隔离：客服问答匹配不召回「提示词模板」类条目，避免与客服QA
+                # 在同一候选池竞争（实测"逆光怎么打"曾被无关客服QA抢命中）。
+                # 提示词模板由 prompt_optimizer 独立分支处理。
+                (QaItem.category != "提示词模板") | (QaItem.category.is_(None)),
             )
         ).scalars().all()
     finally:
