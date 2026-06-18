@@ -18,7 +18,10 @@ from cryptography.fernet import Fernet, InvalidToken
 log = logging.getLogger(__name__)
 
 _PREFIX = "ENC::"
-_KEY_FILE = Path("data/.master.key")
+# 锚到 backend 目录的绝对路径（与 db.py 一致），避免不同 cwd（systemd/容器/supervisor）
+# 启动时路径漂移：相对路径会在新 cwd 下找不到旧 key → 静默生成新 key → 历史密文永久不可解。
+_BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
+_KEY_FILE = _BACKEND_DIR / "data" / ".master.key"
 _fernet: Fernet | None = None
 
 

@@ -274,9 +274,13 @@ def send_broadcast(broadcast_id: int, skip_already_sent: bool = False, at_all: b
         if skip_already_sent and b.last_result:
             try:
                 prev = json.loads(b.last_result)
-                for s in prev.get("success") or []:
-                    if isinstance(s, dict) and s.get("group_id"):
-                        already_sent_ids.add(s["group_id"])
+                # 优先用全量的 success_ids（不截断）；老记录没有则回退到展示用的 success[:20]
+                for gid in prev.get("success_ids") or []:
+                    already_sent_ids.add(gid)
+                if not already_sent_ids:
+                    for s in prev.get("success") or []:
+                        if isinstance(s, dict) and s.get("group_id"):
+                            already_sent_ids.add(s["group_id"])
             except Exception:
                 pass
             if already_sent_ids:
@@ -305,8 +309,10 @@ def send_broadcast(broadcast_id: int, skip_already_sent: bool = False, at_all: b
                 })
                 continue
             try:
+                from . import crypto
                 res = _send_one_group_markdown(
-                    wh, getattr(g, "webhook_secret", "") or "", title, md, at_all=at_all)
+                    wh, crypto.decrypt(getattr(g, "webhook_secret", "") or ""),
+                    title, md, at_all=at_all)
                 if res.get("ok"):
                     success.append({"group_id": g.id, "title": g.conversation_title})
                 else:
@@ -325,13 +331,17 @@ def send_broadcast(broadcast_id: int, skip_already_sent: bool = False, at_all: b
             warning = "存在本地上传图片但未配置「文件访问基址」(public_base_url)，这些图在群里显示不出，请改用公网外链或配置公网地址。"
 
         b.last_sent_at = datetime.utcnow()
+        # success_ids 是全量成功群 id（仅整数，体积小，绝不截断）——重试幂等只认它，
+        # 避免像 success[:20] 那样被截断后，第 21+ 个已成功的群在重试时被重复群发 @全体。
+        # 展示用的 success/failed 详情仍各截 20 条控制体积；last_result 列是 TEXT，不再整体截断。
         b.last_result = json.dumps({
             "success_count": len(success),
             "failed_count": len(failed),
+            "success_ids": [s["group_id"] for s in success],
             "success": success[:20],
             "failed": failed[:20],
             **({"warning": warning} if warning else {}),
-        }, ensure_ascii=False)[:2000]
+        }, ensure_ascii=False)
         b.status = "sent" if not failed else ("partial" if success else "failed")
         db.commit()
         return {

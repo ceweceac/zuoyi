@@ -542,7 +542,11 @@ def _render_groups_tab():
         try:
             r = db.get(DingtalkGroup, row["id"])
             cur_url = (r.webhook_url or "") if r else ""
-            cur_secret = (r.webhook_secret or "") if r else ""
+            from ..services import crypto
+            try:
+                cur_secret = crypto.decrypt(r.webhook_secret or "") if r else ""
+            except crypto.DecryptError:
+                cur_secret = ""  # master key 变更，留空让管理员重填
         finally:
             db.close()
         with ui.dialog() as dlg, ui.card().classes("w-[560px]"):
@@ -629,12 +633,15 @@ def _save_atall(group_id: int, url: str, secret: str, dlg, refresh_cb):
     if url and not url.startswith("https://oapi.dingtalk.com/robot/send"):
         ui.notify("Webhook 地址必须是 https://oapi.dingtalk.com/robot/send 开头", type="negative")
         return
+    from ..services import crypto
     db = SessionLocal()
     try:
         r = db.get(DingtalkGroup, group_id)
         if r:
             r.webhook_url = url[:500] if url else None
-            r.webhook_secret = secret[:255] if secret else None
+            # 加签密钥静态加密入库（拿到库即可伪造该群群发）。crypto.decrypt 对无前缀的
+            # 老明文值会原样返回，迁移无缝。
+            r.webhook_secret = crypto.encrypt(secret) if secret else None
             db.commit()
     finally:
         db.close()

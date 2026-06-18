@@ -81,11 +81,15 @@ def ask(user_text: str, history: list = None, kb_context: str = None) -> LlmResu
     """
     _maybe_reload_settings()
     t0 = time.time()
-    if not settings.llm_enabled:
+    # 一致性快照：base_url/api_key/model 等连接组字段一次性原子读出，
+    # 避免热重载线程在调用中途换掉部分字段导致新旧混搭（认证失败/打错端点）。
+    from . import runtime_settings
+    conn = runtime_settings.llm_conn_snapshot()
+    if not conn["llm_enabled"]:
         return LlmResult(text=f"[LLM 未启用] 你说的是：{user_text}",
                          latency_ms=int((time.time() - t0) * 1000),
                          success=True, error="llm_disabled")
-    url = (settings.llm_base_url or "").rstrip("/") + "/chat/completions"
+    url = (conn["llm_base_url"] or "").rstrip("/") + "/chat/completions"
     try:
         # ─── 组装 system prompt ───
         if kb_context is None:
@@ -120,14 +124,14 @@ def ask(user_text: str, history: list = None, kb_context: str = None) -> LlmResu
         messages.append({"role": "user", "content": wrapped_user})
 
         payload = {
-            "model": settings.llm_model,
-            "temperature": settings.llm_temperature,
+            "model": conn["llm_model"],
+            "temperature": conn["llm_temperature"],
             "messages": messages,
             # 不再硬卡短回答；给足空间让复杂问题答完整（约 1200 中文字封顶，防失控）
             "max_tokens": 2048,
         }
-        headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
-        with httpx.Client(timeout=settings.llm_timeout) as cli:
+        headers = {"Authorization": f"Bearer {conn['llm_api_key']}"}
+        with httpx.Client(timeout=conn["llm_timeout"]) as cli:
             r = cli.post(url, json=payload, headers=headers)
         cost = int((time.time() - t0) * 1000)
         if r.status_code != 200:
@@ -163,9 +167,11 @@ def rephrase(user_text: str, kb_answer: str, history: list = None) -> LlmResult:
     """
     _maybe_reload_settings()
     t0 = time.time()
-    if not settings.llm_enabled or not settings.llm_api_key or not settings.llm_base_url:
+    from . import runtime_settings
+    conn = runtime_settings.llm_conn_snapshot()
+    if not conn["llm_enabled"] or not conn["llm_api_key"] or not conn["llm_base_url"]:
         return LlmResult(text=kb_answer, latency_ms=0, success=False, error="llm_disabled")
-    url = settings.llm_base_url.rstrip("/") + "/chat/completions"
+    url = conn["llm_base_url"].rstrip("/") + "/chat/completions"
     try:
         background = (getattr(settings, "product_background", "") or "").strip()
         bg_block = (
@@ -191,13 +197,13 @@ def rephrase(user_text: str, kb_answer: str, history: list = None) -> LlmResult:
             messages.extend(history)
         messages.append({"role": "user", "content": usr_msg})
         payload = {
-            "model": settings.llm_model,
+            "model": conn["llm_model"],
             "temperature": 0.8,
             "messages": messages,
             "max_tokens": 1024,  # 给足空间，避免润色较长的标准答案时被截断
         }
-        headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
-        with httpx.Client(timeout=min(settings.llm_timeout, 20)) as cli:
+        headers = {"Authorization": f"Bearer {conn['llm_api_key']}"}
+        with httpx.Client(timeout=min(conn["llm_timeout"], 20)) as cli:
             r = cli.post(url, json=payload, headers=headers)
         cost = int((time.time() - t0) * 1000)
         if r.status_code != 200:
@@ -226,12 +232,14 @@ def raw_chat(system_prompt: str, user_prompt: str, temperature: float = 0.6,
     失败时 success=False、text 为空，调用方据此决定降级。"""
     _maybe_reload_settings()
     t0 = time.time()
-    if not settings.llm_enabled or not settings.llm_api_key or not settings.llm_base_url:
+    from . import runtime_settings
+    conn = runtime_settings.llm_conn_snapshot()
+    if not conn["llm_enabled"] or not conn["llm_api_key"] or not conn["llm_base_url"]:
         return LlmResult(text="", latency_ms=0, success=False, error="llm_disabled")
-    url = settings.llm_base_url.rstrip("/") + "/chat/completions"
+    url = conn["llm_base_url"].rstrip("/") + "/chat/completions"
     try:
         payload = {
-            "model": settings.llm_model,
+            "model": conn["llm_model"],
             "temperature": temperature,
             "max_tokens": max_tokens,
             "messages": [
@@ -239,8 +247,8 @@ def raw_chat(system_prompt: str, user_prompt: str, temperature: float = 0.6,
                 {"role": "user", "content": user_prompt},
             ],
         }
-        headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
-        with httpx.Client(timeout=min(settings.llm_timeout, 25)) as cli:
+        headers = {"Authorization": f"Bearer {conn['llm_api_key']}"}
+        with httpx.Client(timeout=min(conn["llm_timeout"], 25)) as cli:
             r = cli.post(url, json=payload, headers=headers)
         cost = int((time.time() - t0) * 1000)
         if r.status_code != 200:
@@ -286,7 +294,9 @@ def judge_match(user_text: str, candidates: list) -> JudgeResult:
     t0 = time.time()
     if not candidates:
         return JudgeResult(success=False, error="no_candidates")
-    if not settings.llm_enabled or not settings.llm_api_key:
+    from . import runtime_settings
+    conn = runtime_settings.llm_conn_snapshot()
+    if not conn["llm_enabled"] or not conn["llm_api_key"]:
         return JudgeResult(success=False, error="llm_disabled")
 
     # 组装候选列表
@@ -330,9 +340,9 @@ def judge_match(user_text: str, candidates: list) -> JudgeResult:
     )
     user_msg = f"用户问题：{user_text}\n\n候选 QA：\n{candidates_text}"
 
-    url = settings.llm_base_url.rstrip("/") + "/chat/completions"
+    url = conn["llm_base_url"].rstrip("/") + "/chat/completions"
     payload = {
-        "model": settings.llm_model,
+        "model": conn["llm_model"],
         "temperature": 0.0,        # 裁判要稳定
         "max_tokens": 150,          # 裁判只输出 JSON，不需要长篇大论
         "messages": [
@@ -340,9 +350,9 @@ def judge_match(user_text: str, candidates: list) -> JudgeResult:
             {"role": "user", "content": user_msg},
         ],
     }
-    headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
+    headers = {"Authorization": f"Bearer {conn['llm_api_key']}"}
     try:
-        with httpx.Client(timeout=min(settings.llm_timeout, 15)) as cli:
+        with httpx.Client(timeout=min(conn["llm_timeout"], 15)) as cli:
             r = cli.post(url, json=payload, headers=headers)
         cost = int((time.time() - t0) * 1000)
         if r.status_code != 200:
