@@ -419,13 +419,18 @@ def _batch_send(userids: List[str], msg_key: str, msg_param: str, token: str) ->
 
     # 成功响应含 processQueryKey；失败 HTTP 4xx 带 code/message
     if r.status_code == 200 and isinstance(data, dict) and "processQueryKey" in data:
-        # invalidStaffIdList：钉钉判定无效的 userId（如不在可见范围）
-        invalid = data.get("invalidStaffIdList") or data.get("flowControlledStaffIdList") or []
-        return {"ok": True, "invalid": invalid, "response": data}
+        # 两个独立列表，都代表"未送达"，不能用 or 短路（否则限流列表被整个吞掉，
+        # 被限流的用户会被误算成发送成功且不会进重试）：
+        #   invalidStaffIdList       —— 钉钉判定无效的 userId（如不在可见范围），无意义重试
+        #   flowControlledStaffIdList —— 被限流未送达，应计入失败供重试
+        invalid = list(data.get("invalidStaffIdList") or [])
+        flow_controlled = list(data.get("flowControlledStaffIdList") or [])
+        return {"ok": True, "invalid": invalid,
+                "flow_controlled": flow_controlled, "response": data}
     log.warning("batchSend 失败: status=%s body=%s", r.status_code, data)
     msg = data.get("message") if isinstance(data, dict) else str(data)
     return {"ok": False, "error": f"HTTP {r.status_code}: {msg}", "invalid": [],
-            "response": data}
+            "flow_controlled": [], "response": data}
 
 
 def start_push_async(targets: List[str], content: str, msg_type: str = "text",
@@ -547,9 +552,14 @@ def _send_in_batches(userids, content, msg_type, token, push_id=None):
         chunk = userids[i:i + _MAX_USERS_PER_CALL]
         res = _batch_send(chunk, msg_key, msg_param, token)
         if res.get("ok"):
-            bad = set(res.get("invalid") or [])
+            bad = set(res.get("invalid") or [])          # 无效，无意义重试
+            flow = set(res.get("flow_controlled") or []) # 被限流，计入待重试
             invalid.extend(bad)
-            sent += len(chunk) - len(bad)
+            failed_userids.extend(flow)
+            # 未送达 = 无效 + 限流，都不能计入 sent
+            sent += len(chunk) - len(bad) - len(flow)
+            if flow:
+                errors.append(f"{len(flow)} 人被限流未送达（已加入重试队列）")
         else:
             errors.append(res.get("error") or "发送失败")
             failed_userids.extend(chunk)  # 整批失败，全部计入待重试

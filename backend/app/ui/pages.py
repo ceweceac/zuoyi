@@ -3,6 +3,7 @@ from nicegui import ui, app, run
 from datetime import datetime
 from typing import Optional
 import io
+import html as _html
 
 from ..db import SessionLocal, SysUser, QaItem, Conversation, verify_password, hash_password
 from ..security import issue
@@ -227,9 +228,9 @@ def _layout(active: str):
             role_label = role_map.get(u.get("role", ""), u.get("role", ""))
             ui.html(f'''
               <div style="display:flex;align-items:center;gap:8px">
-                <div style="width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:600">{u.get("displayName","?")[:1]}</div>
+                <div style="width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:600">{_html.escape(str(u.get("displayName","?"))[:1])}</div>
                 <div>
-                  <div style="font-size:13px;font-weight:500;color:#1e1b4b">{u.get("displayName","")}</div>
+                  <div style="font-size:13px;font-weight:500;color:#1e1b4b">{_html.escape(str(u.get("displayName","")))}</div>
                   <div style="font-size:11px;color:#9ca3af">{role_label}</div>
                 </div>
               </div>
@@ -475,16 +476,19 @@ def page_dashboard():
         try:
             total = db.query(Conversation).count()
             escalated = db.query(Conversation).filter(Conversation.escalated == "1").count()
-            answered = db.query(Conversation).filter(Conversation.answer_level == "B").count()
+            # A = 命中 KB 标准答案，B = LLM 兜底/保护话术（均算"机器人解决"）。
+            kb_hit = db.query(Conversation).filter(Conversation.answer_level == "A").count()
+            bot_solved = db.query(Conversation).filter(Conversation.answer_level.in_(("A", "B"))).count()
         finally:
             db.close()
-        hit_rate = f"{(answered / total * 100):.1f}%" if total else "—"
-        bot_rate = f"{(answered / total * 100):.1f}%" if total else "—"
+        # 命中率=知识库覆盖，只数 A 级（真正命中 KB）；机器人解决率=A+B。
+        hit_rate = f"{(kb_hit / total * 100):.1f}%" if total else "—"
+        bot_rate = f"{(bot_solved / total * 100):.1f}%" if total else "—"
         cards = [
-            ("总对话数",   str(total),    "💬", "#6366f1", "#eef2ff", "全部对话"),
-            ("机器人解决", str(answered), "🤖", "#10b981", "#ecfdf5", f"解决率 {bot_rate}"),
-            ("转人工",     str(escalated),"👤", "#f59e0b", "#fffbeb", f"占比 {f'{escalated/total*100:.1f}' if total else 0}%"),
-            ("命中率",     hit_rate,      "📊", "#8b5cf6", "#f5f3ff", "知识库覆盖"),
+            ("总对话数",   str(total),       "💬", "#6366f1", "#eef2ff", "全部对话"),
+            ("机器人解决", str(bot_solved),  "🤖", "#10b981", "#ecfdf5", f"解决率 {bot_rate}"),
+            ("转人工",     str(escalated),   "👤", "#f59e0b", "#fffbeb", f"占比 {f'{escalated/total*100:.1f}' if total else 0}%"),
+            ("命中率",     hit_rate,         "📊", "#8b5cf6", "#f5f3ff", f"知识库覆盖（{kb_hit} 条 A 级）"),
         ]
         with ui.row().classes("w-full gap-4 mt-4"):
             for label, value, icon, color, bg, sub in cards:
@@ -594,25 +598,31 @@ def page_qa():
         ui.button("查询", icon="search", on_click=load).props("color=primary unelevated")
         if A.can_edit_qa():
             ui.button("新增", icon="add", on_click=lambda: open_edit(None)).props("unelevated").style("background:#6366f1;color:#fff")
-        ui.html('<div style="width:1px;height:28px;background:#e5e7eb;margin:0 4px"></div>')
-        ui.upload(on_upload=lambda e: do_import(e), auto_upload=True, max_files=1)\
-            .props('accept=".xlsx" label="导入表格" dense outlined').classes("w-36")
-        async def _on_smart_upload(e):
-            await do_smart_import(e)
-        ui.upload(on_upload=_on_smart_upload, auto_upload=True, max_files=1)\
-            .props('accept=".txt,.md,.docx,.pdf" label="智能导入文档" dense outlined').classes("w-40")
+        if A.can_edit_qa():
+            ui.html('<div style="width:1px;height:28px;background:#e5e7eb;margin:0 4px"></div>')
+            ui.upload(on_upload=lambda e: do_import(e), auto_upload=True, max_files=1)\
+                .props('accept=".xlsx" label="导入表格" dense outlined').classes("w-36")
+            async def _on_smart_upload(e):
+                await do_smart_import(e)
+            ui.upload(on_upload=_on_smart_upload, auto_upload=True, max_files=1)\
+                .props('accept=".txt,.md,.docx,.pdf" label="智能导入文档" dense outlined').classes("w-40")
         ui.html('<div style="width:1px;height:28px;background:#e5e7eb;margin:0 4px"></div>')
         ui.button("刷新知识库", icon="sync", on_click=lambda: (store.reload(), ui.notify(f"已刷新至第 {store.version} 版", type="positive"))).props("outline color=primary")
 
         def do_dedupe():
+            if not A.can_edit_qa():
+                ui.notify("无权限：仅 admin / editor 可去重", type="negative"); return
             n = ingest_svc.dedupe_existing()
             ui.notify(f"已清理重复条目 {n} 条", type="positive" if n > 0 else "info")
             load()
-        ui.button("去重", icon="cleaning_services", on_click=do_dedupe).props("outline color=primary")
-        ui.html('<div style="width:1px;height:28px;background:#e5e7eb;margin:0 4px"></div>')
+        if A.can_edit_qa():
+            ui.button("去重", icon="cleaning_services", on_click=do_dedupe).props("outline color=primary")
+            ui.html('<div style="width:1px;height:28px;background:#e5e7eb;margin:0 4px"></div>')
 
         async def batch_delete_selected():
             """删除当前勾选的条目。"""
+            if not A.can_edit_qa():
+                ui.notify("无权限：仅 admin / editor 可删除知识库条目", type="negative"); return
             sel = table.selected or []
             if not sel:
                 ui.notify("请先勾选要删除的条目", type="warning"); return
@@ -639,6 +649,8 @@ def page_qa():
 
         async def delete_all_filtered():
             """删除当前筛选条件下的全部条目（不限于勾选）。"""
+            if not A.can_edit_qa():
+                ui.notify("无权限：仅 admin / editor 可删除知识库条目", type="negative"); return
             db = SessionLocal()
             try:
                 q = db.query(QaItem).filter(QaItem.deleted == "0")
@@ -673,8 +685,9 @@ def page_qa():
             ui.notify(f"已删除 {n} 条", type="positive")
             load()
 
-        ui.button("批量删除选中", icon="delete_sweep", on_click=batch_delete_selected).props("outline color=negative")
-        ui.button("删除筛选全部", icon="delete_forever", on_click=delete_all_filtered).props("outline color=negative")
+        if A.can_edit_qa():
+            ui.button("批量删除选中", icon="delete_sweep", on_click=batch_delete_selected).props("outline color=negative")
+            ui.button("删除筛选全部", icon="delete_forever", on_click=delete_all_filtered).props("outline color=negative")
 
         def show_pending():
             """快捷：筛选所有待审核"""
@@ -849,6 +862,8 @@ def page_qa():
 
     async def do_import(e):
         """同步导入：解析 Excel + 落库。放线程池跑，避免阻塞 NiceGUI WebSocket。"""
+        if not A.can_edit_qa():
+            ui.notify("无权限：仅 admin / editor 可导入知识库", type="negative"); return
         import asyncio
         u = A.user()
         # e.content.read() 是同步 BytesIO 操作，本身不慢，但放线程池更安全
@@ -872,6 +887,8 @@ def page_qa():
     async def do_smart_import(e):
         """智能导入：上传文档 → 大模型抽取问答对 → 入库待审核。
         放线程池跑，避免阻塞事件循环导致 NiceGUI WebSocket 断连。"""
+        if not A.can_edit_qa():
+            ui.notify("无权限：仅 admin / editor 可导入知识库", type="negative"); return
         u = A.user()
         filename = e.name or "uploaded.bin"
         content = e.content.read()
@@ -1332,10 +1349,29 @@ def page_failure_reports():
         rows=[], row_key="q", pagination=20,
     ).classes("w-full mt-2").props(TABLE_ZH_PROPS)
 
+    def _safe_report_path(path_str: str):
+        """约束下载/读取只能落在 report_dir 内的 report_*.json，
+        防止前端篡改 select 值读取任意文件（如 data/.master.key、*.db）。"""
+        try:
+            p = _Path(path_str).resolve()
+        except Exception:
+            return None
+        base = report_dir.resolve()
+        if base not in p.parents:
+            return None
+        if p.suffix != ".json" or not p.name.startswith("report_"):
+            return None
+        return p
+
     def load_report(path_str: str):
         summary_box.clear()
+        p = _safe_report_path(path_str)
+        if p is None:
+            ui.notify("非法的报告路径", type="negative")
+            table.rows = []
+            return
         try:
-            data = _json.loads(_Path(path_str).read_text())
+            data = _json.loads(p.read_text())
         except Exception as e:
             ui.notify(f"读取失败：{e}", type="negative")
             table.rows = []
@@ -1364,10 +1400,12 @@ def page_failure_reports():
         table.update()
 
     def do_download():
-        path_str = sel.value
+        p = _safe_report_path(sel.value)
+        if p is None:
+            ui.notify("非法的报告路径", type="negative"); return
         try:
-            content = _Path(path_str).read_bytes()
-            ui.download(content, _Path(path_str).name)
+            content = p.read_bytes()
+            ui.download(content, p.name)
         except Exception as e:
             ui.notify(f"导出失败：{e}", type="negative")
 

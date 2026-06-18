@@ -52,11 +52,33 @@ def _enforce_jwt_secret():
         )
 
 
+def _warn_default_passwords():
+    """启动自检：种子账号仍是默认弱口令则高声告警，提醒生产改密。
+    默认账号 + 无限频曾是直接的越权入口（爆破已加限频，但弱口令本身仍需改）。"""
+    from .db import SessionLocal, SysUser, verify_password
+    defaults = {"admin": "admin123", "auditor": "auditor123", "editor": "editor123"}
+    db = SessionLocal()
+    try:
+        weak = []
+        for name, pw in defaults.items():
+            u = db.query(SysUser).filter(SysUser.username == name).first()
+            if u and u.enabled == "1" and verify_password(pw, u.password):
+                weak.append(name)
+    finally:
+        db.close()
+    if weak:
+        log.warning(
+            "⚠️  以下账号仍在使用默认密码：%s 。生产环境务必尽快在「用户管理」里修改，"
+            "否则等同公开弱口令。", "、".join(weak),
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _enforce_jwt_secret()
     init_db()
     runtime_settings.load_from_db()
+    _warn_default_passwords()
     store.reload()
     # 启动自检：源码中含 U+FFFD（损坏字符）直接拒绝启动；DB 中含则告警
     # 开发期可 export QABOT_SKIP_CHARCHECK=1 跳过

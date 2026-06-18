@@ -190,13 +190,21 @@ def ingest(filename: str, content: bytes, created_by: str,
 
     # 去重（本批内 + 与 DB 已有）
     seen, dedup = set(), []
+    bad_char = 0
     for it in extracted_all:
         q = it["q"].strip()
+        # U+FFFD 防线：pdf/docx 抽取损坏字形常产出 �，绝不入库（否则会回给用户）。
+        if "�" in q or "�" in (it.get("a") or ""):
+            bad_char += 1
+            log.warning("ingest skip item with U+FFFD: q=%r", q[:50])
+            continue
         key = _norm_q(q)
         if key in seen:
             continue
         seen.add(key)
         dedup.append(it)
+    if bad_char:
+        log.warning("ingest: 跳过 %d 条含损坏字符(�)的问答", bad_char)
 
     inserted = 0
     duplicated = 0
@@ -283,6 +291,11 @@ def ingest_excel(content: bytes, created_by: str):
                 a = _safe_cell(row, col["answer"])
                 if not q or not a:
                     skipped += 1
+                    continue
+                # U+FFFD 防线：含损坏字符的单元格不入库（否则会回给用户）。
+                if "�" in q or "�" in a:
+                    skipped += 1
+                    log.warning("ingest_excel skip cell with U+FFFD: q=%r", q[:50])
                     continue
                 key = _norm_q(q)
                 if key in existing:

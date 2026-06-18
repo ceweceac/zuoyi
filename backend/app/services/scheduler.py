@@ -180,8 +180,10 @@ def add_or_update_schedule(schedule_id: int):
         try:
             sch = db.get(BroadcastSchedule, schedule_id)
             if sch is not None:
-                # 转无时区时间存（DB 是 naive UTC）
-                sch.next_run_at = next_run.astimezone(TZ).replace(tzinfo=None)
+                # 存 naive UTC，与 last_run_at = datetime.utcnow() 同基准。
+                # 原先错误地转成上海时间再去 tzinfo，导致 next_run_at 比 last_run_at 偏移 8 小时，
+                # UI 时间比较/排序错乱。
+                sch.next_run_at = next_run.astimezone(timezone("UTC")).replace(tzinfo=None)
                 db.commit()
         finally:
             db.close()

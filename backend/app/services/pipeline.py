@@ -257,7 +257,9 @@ _FRUSTRATION_WORDS = (
     "不太对", "不准确", "不是这个意思", "不对吧", "错的", "错了", "错啦",
     "听不懂", "看不懂", "不明白", "没明白",
     "我说的是", "我说我", "我问的是", "我要的是", "我是说",
-    "再说一遍", "重新", "你听清", "你看清",
+    # 「重新」不能裸用：这是图/视频生成产品，「重新生成/重新出图/重新来一张」是高频正常诉求，
+    # 裸词会把它们误判为挫败、在 KB 匹配前短路，甚至连点两次升级 urgent。只收针对"回答"的纠错短语。
+    "再说一遍", "重新答", "重新回答", "重新说", "重新讲", "你听清", "你看清",
     # 口语挫败词 — 用户用更生活化的方式表达"还是没解决"
     "还是不行", "也不行", "都不行", "依然不行", "仍然不行", "搞不定", "解决不了",
     "没用", "白说", "没有用", "解不出", "处理不了",
@@ -274,25 +276,37 @@ def _hit_frustration(text: str) -> str:
     return ""
 
 
-def _count_recent_frustration(sender: str, window_minutes: int = 5) -> int:
-    """看这个用户最近 N 分钟内已经说过几次挫败感词。"""
+def _fetch_recent_rows(sender: str, limit: int = 20):
+    """取该用户最近 limit 条对话（按 id 倒序），供各近因判定共用一次查询，
+    避免每条消息打开 3~5 个独立 DB 连接重复扫描。"""
     if not sender:
-        return 0
+        return []
     from ..db import SessionLocal, Conversation
     from sqlalchemy import desc
-    from datetime import datetime, timedelta
-    now = datetime.utcnow()
     db = SessionLocal()
     try:
-        rows = (
+        return (
             db.query(Conversation)
             .filter(Conversation.sender == sender)
             .order_by(desc(Conversation.id))
-            .limit(15)
+            .limit(limit)
             .all()
         )
     finally:
         db.close()
+
+
+def _count_recent_frustration(sender: str, window_minutes: int = 5, rows=None) -> int:
+    """看这个用户最近 N 分钟内已经说过几次挫败感词。
+    rows 可传入共享的近因查询结果（见 _fetch_recent_rows），不传则自行查询。"""
+    if not sender:
+        return 0
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    if rows is None:
+        rows = _fetch_recent_rows(sender, limit=15)
+    else:
+        rows = rows[:15]
     n = 0
     for r in rows:
         if not r.created_at or (now - r.created_at) > timedelta(minutes=window_minutes):
@@ -329,7 +343,7 @@ def _count_recent_messages(sender: str, window_minutes: int = 5) -> int:
     return n
 
 
-def _count_recent_unsolved_messages(sender: str, window_minutes: int = 2) -> int:
+def _count_recent_unsolved_messages(sender: str, window_minutes: int = 2, rows=None) -> int:
     """
     看用户最近 N 分钟内"没被解决"的消息条数。
     没解决 = answer_level 是 B（LLM 兜底）或 C（已转人工）。
@@ -346,21 +360,12 @@ def _count_recent_unsolved_messages(sender: str, window_minutes: int = 2) -> int
     """
     if not sender:
         return 0
-    from ..db import SessionLocal, Conversation
-    from sqlalchemy import desc
     from datetime import datetime, timedelta
     now = datetime.utcnow()
-    db = SessionLocal()
-    try:
-        rows = (
-            db.query(Conversation)
-            .filter(Conversation.sender == sender)
-            .order_by(desc(Conversation.id))
-            .limit(20)
-            .all()
-        )
-    finally:
-        db.close()
+    if rows is None:
+        rows = _fetch_recent_rows(sender, limit=20)
+    else:
+        rows = rows[:20]
     n = 0
     # 这些 raw_llm_answer 标记意味着 bot 实际答得很好，不是真"没解决"
     # 注意：[充值引导] 命中后已单独触发告警群提醒人工跟进，再计入 burst
@@ -427,30 +432,22 @@ def _detect_blind_spot(current_text: str, window_hours: int = 6, threshold: int 
     return count
 
 
-def _count_recent_unresolved(sender: str, current_text: str) -> int:
+def _count_recent_unresolved(sender: str, current_text: str, rows=None) -> int:
     """
     判断用户是否在连续追问同一类问题。规则：
     - 取最近 N 条对话
     - 时间间隔在 5 分钟内的算连续
     - 当前问题与历史问题有词级重叠（不限定 C 级），都视为"同一话题持续追问"
+    rows 可传入共享的近因查询结果（见 _fetch_recent_rows），不传则自行查询。
     """
     if not sender:
         return 0
-    from ..db import SessionLocal, Conversation
-    from sqlalchemy import desc
     from datetime import datetime, timedelta
 
-    db = SessionLocal()
-    try:
-        rows = (
-            db.query(Conversation)
-            .filter(Conversation.sender == sender)
-            .order_by(desc(Conversation.id))
-            .limit(8)
-            .all()
-        )
-    finally:
-        db.close()
+    if rows is None:
+        rows = _fetch_recent_rows(sender, limit=8)
+    else:
+        rows = rows[:8]
 
     # 当前问题的 token 集合
     cur_tokens = _tokens(current_text)
@@ -550,11 +547,15 @@ def _do_escalate(rec, sender: str, sender_name: str, raw_text: str,
     conv_id = audit.write(rec)
     # 只取本次"连续对话"内的真实轮数，不固定塞 5 轮
     first_question, recent_dialog = _format_recent_dialog(sender, raw_text)
+    # 告警发到运营群、@所有人并留存聊天记录：脱敏掉手机号/身份证/银行卡，
+    # 仅打码这些敏感数字，问题文本本身保留，人工仍能看懂诉求。
+    first_question = filters.mask(first_question)[0]
+    recent_dialog = filters.mask(recent_dialog)[0]
     try:
         alert.send_alert(
             level=level,
             title=reason,
-            user_text=first_question,    # 用户最初的提问（真实原话）
+            user_text=first_question,    # 用户最初的提问（已脱敏 PII）
             sender_name=sender_name,
             sender_id=sender,
             bot_reply=user_reply,
@@ -719,6 +720,18 @@ def handle(sender: str, raw_text: str, sender_name: str = "") -> str:
     # 取最近 10 轮历史
     history = memory.recent(sender, rounds=10)
 
+    # 统一脱敏：凡是要出网给第三方 LLM 的文本（域路由 / 裁判 / 润色 / 兜底 / 历史），
+    # 一律用脱敏版，避免手机号/身份证/银行卡原文外泄。本次 mask 的 placeholders
+    # 会被复用到最后 LLM 兜底答案的回填（filters.restore），保证占位符一致。
+    # 注意：本地 dice 粗筛（matcher.*）不出网，仍用 raw_text 以保证匹配质量。
+    desens, placeholders = filters.mask(raw_text)
+    rec.question_desensitized = desens
+    # 历史也脱敏（历史问答里同样可能含 PII），用各自的临时占位（不需回填，仅喂模型）。
+    masked_history = [
+        {"role": m.get("role", ""), "content": filters.mask(m.get("content", ""))[0]}
+        for m in (history or [])
+    ]
+
     # 1) 红线词 → 立即转人工 + 紧急告警
     if filters.hit_redline(raw_text):
         rec.redline_hit = True
@@ -764,11 +777,15 @@ def handle(sender: str, raw_text: str, sender_name: str = "") -> str:
                             reason=f"用户提及业务 ID『{hit_id}』，需人工核查", level="urgent",
                             extra_reply=extra)
 
+    # 近因判定共用一次查询（挫败计数 / 连续追问 / burst 未解决都基于该用户最近 20 条）：
+    # 取一次、传给各判定，避免一条消息打开多个 DB 连接重复扫描。
+    recent_rows = _fetch_recent_rows(sender, limit=20)
+
     # 1.6) 用户挫败感 / 纠错 → 立即告警（用户说"不对/不是这个/我说我..."等）
     frustration = _hit_frustration(raw_text)
     if frustration:
         # 看看用户最近是不是已经说过类似的（再次纠错说明真不满了）
-        recent_frustration = _count_recent_frustration(sender)
+        recent_frustration = _count_recent_frustration(sender, rows=recent_rows)
         if recent_frustration >= 1:
             return _do_escalate(rec, sender, sender_name, raw_text,
                                 reason=f"用户多次表达不满意（命中『{frustration}』，近 5 分钟第 {recent_frustration + 1} 次）",
@@ -789,7 +806,7 @@ def handle(sender: str, raw_text: str, sender_name: str = "") -> str:
         log.info("frustration first detected: sender=%s word=%s", sender, frustration)
 
     # 1.7) 同主题连续追问 N 次（按词重叠判定）
-    unresolved = _count_recent_unresolved(sender, raw_text)
+    unresolved = _count_recent_unresolved(sender, raw_text, rows=recent_rows)
     # 下限取 2：unresolved 起算就把"当前这条"计为 1，若阈值下限为 1 则每条消息都会
     # 满足 >=1 而无条件转人工。至少要有 1 条历史同主题追问（即 unresolved>=2）才升级。
     repeat_threshold = max(2, int(settings.repeat_threshold or 3))
@@ -804,7 +821,7 @@ def handle(sender: str, raw_text: str, sender_name: str = "") -> str:
     # 阈值从 ≥2 调整为 ≥3 的原因：当前条还未判定级别，原 "burst_unsolved+1" 把当前条
     # 当成第 3 条计入，可能误升级"命中 KB" 的正常问题。改为只看历史已确认的 B/C 级，
     # ≥3 才升级，避免误伤。
-    burst_unsolved = _count_recent_unsolved_messages(sender, window_minutes=2)
+    burst_unsolved = _count_recent_unsolved_messages(sender, window_minutes=2, rows=recent_rows)
     if burst_unsolved >= 3:
         return _do_escalate(rec, sender, sender_name, raw_text,
                             reason=f"用户 2 分钟内有 {burst_unsolved} 条问题机器人未能解答", level="warn")
@@ -833,7 +850,7 @@ def handle(sender: str, raw_text: str, sender_name: str = "") -> str:
     # 2.0) 业务域路由（可选，默认关闭）：先把用户问题分到业务域，缩小粗筛候选池、降误命中。
     # 零回归保护：返回空 set → matcher 退化为全量匹配（与未开启完全一致）。
     # 路由结果只在 domain_router 内部 log.info 记录，不写 rec 字段（避免污染审计字段）。
-    domain_filter = domain_router.classify_question(raw_text)
+    domain_filter = domain_router.classify_question(desens)
 
     if getattr(settings, "judge_enabled", True):
         # 取 top-K 候选（dice 粗筛宽门槛，让裁判看到更多候选）
@@ -852,7 +869,7 @@ def handle(sender: str, raw_text: str, sender_name: str = "") -> str:
                 matched_item, matched_score = top_item, top_score
             elif top_score >= prefilter:
                 # 弱-中匹配走 LLM 裁判
-                jr = llm.judge_match(raw_text, topk)
+                jr = llm.judge_match(desens, topk)
                 judge_used = True
                 judge_reason = jr.reason
                 # 记录裁判的 LLM 开销
@@ -897,7 +914,7 @@ def handle(sender: str, raw_text: str, sender_name: str = "") -> str:
     if matched_item is not None:
         item = matched_item
         if settings.rephrase_kb_hit:
-            r = llm.rephrase(raw_text, item.answer, history=history)
+            r = llm.rephrase(desens, item.answer, history=masked_history)
             final_answer = r.text
             # 注意：rephrase 的 token 会覆盖上面 judge 的 token；
             # 真实总开销 = judge token + rephrase token，这里只记录后者作为主要审计。
@@ -922,9 +939,7 @@ def handle(sender: str, raw_text: str, sender_name: str = "") -> str:
     #    强业务/合规域（_is_product_question）的判定保留供下方对 LLM 结果做二次保险用，
     #    不再直接转人工 —— 之前太宽容易把"侵权怎么解决"这种问题全部挡掉，
     #    现在先让 LLM 试着答，答不出再转人工。
-    # 3) 脱敏 → LLM 兜底（仅用于非产品域问题）
-    desens, placeholders = filters.mask(raw_text)
-    rec.question_desensitized = desens
+    #    desens / placeholders 已在 handle 开头统一脱敏（见上文），此处直接复用。
 
     # RAG：检索与问题最相关的少量 KB 片段喂给 LLM，替代全量 678 条 KB（大幅省 token）。
     # 复用 matcher dice 粗筛（零新依赖）。检索为空 → 传空串，ask 用骨架 prompt（人设+格式）。
@@ -933,7 +948,7 @@ def handle(sender: str, raw_text: str, sender_name: str = "") -> str:
         raw_text, k=rag_k, prefilter_threshold=0.05, domain_filter=domain_filter)
     kb_context = qa_store.format_kb_snippets(rag_candidates)
 
-    r = llm.ask(desens, history=history, kb_context=kb_context)
+    r = llm.ask(desens, history=masked_history, kb_context=kb_context)
     rec.raw_llm_answer = r.text
     rec.llm_url = r.url
     rec.llm_status = r.status

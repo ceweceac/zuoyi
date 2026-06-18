@@ -26,7 +26,19 @@ def current_user(request: Request) -> dict:
         data = jwt.decode(auth[7:], settings.jwt_secret, algorithms=[settings.jwt_algorithm])
     except JWTError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
-    return {"username": data["sub"], "role": data.get("role", "viewer")}
+    username = data["sub"]
+    # 回查 DB：token 无吊销机制，禁用/降权/删除用户后旧 token 仍在 TTL 内有效，
+    # 这里以 DB 的 enabled/role 为准（token 里的 role 仅作签发时快照，不再信任）。
+    # 延迟导入避免与 db 模块的循环依赖。
+    from .db import SessionLocal, SysUser
+    db = SessionLocal()
+    try:
+        u = db.query(SysUser).filter(SysUser.username == username).first()
+    finally:
+        db.close()
+    if u is None or u.enabled != "1":
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User disabled or removed")
+    return {"username": username, "role": u.role or "viewer"}
 
 
 def require_role(*roles: str):

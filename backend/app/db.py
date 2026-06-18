@@ -80,6 +80,9 @@ class Conversation(Base):
         Index("ix_conv_sender_created", "sender", "created_at"),
         Index("ix_conv_created_at", "created_at"),
         Index("ix_conv_level", "answer_level"),
+        # unmatched/stats 后台查询按 escalated 过滤 + 按 question 分组，
+        # 对话表持续增长，无此索引会退化成全表扫 + 临时排序。
+        Index("ix_conv_escalated_q", "escalated", "question"),
     )
     id = Column(Integer, primary_key=True, autoincrement=True)
     sender = Column(String(64))                    # 钉钉发送人 staffId
@@ -356,6 +359,7 @@ def _ensure_indexes():
         "CREATE INDEX IF NOT EXISTS ix_conv_sender_created ON conversation(sender, created_at)",
         "CREATE INDEX IF NOT EXISTS ix_conv_created_at ON conversation(created_at)",
         "CREATE INDEX IF NOT EXISTS ix_conv_level ON conversation(answer_level)",
+        "CREATE INDEX IF NOT EXISTS ix_conv_escalated_q ON conversation(escalated, question)",
         "CREATE INDEX IF NOT EXISTS ix_group_active ON dingtalk_group(active)",
         "CREATE INDEX IF NOT EXISTS ix_sched_due ON broadcast_schedule(enabled, next_run_at)",
         "CREATE INDEX IF NOT EXISTS ix_sched_broadcast ON broadcast_schedule(broadcast_id)",
@@ -416,7 +420,9 @@ def _migrate_conversation_columns():
         "sender_name":            "VARCHAR(128)",
         "raw_llm_answer":         "TEXT",
         "llm_url":                "VARCHAR(500)",
+        "llm_model":              "VARCHAR(128)",
         "llm_status":             "INTEGER",
+        "llm_latency_ms":         "INTEGER",
         "llm_prompt_tokens":      "INTEGER",
         "llm_completion_tokens":  "INTEGER",
         "llm_total_tokens":       "INTEGER",
