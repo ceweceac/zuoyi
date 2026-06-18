@@ -146,6 +146,31 @@ def _pick_official_scene(text: str):
     # 3) 子分类没命中，但定了用途 → 用该用途第一条兜底
     if use and cands:
         return cands[0]
+    # 4) 关键词完全没命中 → LLM 兜底分类（覆盖"老奶奶/柴犬/跑车"等关键词追不全的情况）
+    return _llm_classify_scene(text)
+
+
+def _llm_classify_scene(text: str):
+    """关键词识别不到时，让 LLM 从26场景里选一个，返回 scene dict 或 None。"""
+    if not (settings.llm_enabled and settings.llm_api_key) or not _OFFICIAL_SCENES:
+        return None
+    menu = "\n".join(f"{i}. {sc['use']}/{sc['sub']}" for i, sc in enumerate(_OFFICIAL_SCENES))
+    sys_p = (
+        "你是提示词场景分类器。用户给一段创作描述，你判断它最适合下面哪个优化场景，"
+        "只输出对应的数字编号（0-25），不要任何解释。\n场景列表：\n" + menu
+    )
+    try:
+        from . import llm
+        r = llm.raw_chat(sys_p, f"创作描述：{text}", temperature=0, max_tokens=10)
+        if r and getattr(r, "text", ""):
+            m = re.search(r"\d+", r.text)
+            if m:
+                idx = int(m.group())
+                if 0 <= idx < len(_OFFICIAL_SCENES):
+                    log.info("LLM 场景分类: %s → %s", text[:20], _OFFICIAL_SCENES[idx]["sub"])
+                    return _OFFICIAL_SCENES[idx]
+    except Exception as e:
+        log.warning("LLM 场景分类失败: %s", e)
     return None
 
 _CREATIVE_HINTS = (
