@@ -257,6 +257,7 @@ def optimize(text: str) -> str:
     body = re.sub(r"(优化提示词|优化这个提示词|帮我优化prompt|帮我改提示词|润色提示词|完善提示词)[:：]?",
                   "", text).strip() or text
 
+    from . import safety_guard
     # 优先用官方场景指令（26条专家级），命中则直接用它优化，质量最高
     official = _pick_official_scene(body)
     if official:
@@ -264,6 +265,7 @@ def optimize(text: str) -> str:
             official["system"]
             + "\n\n【输出要求】先给出优化后的成品提示词，再用一行『补充了：』简述补充了哪些维度。"
               "用中文，不要 markdown。"
+            + safety_guard.SAFETY_RULES
         )
         user_prompt = f"用户输入：{body}\n\n请按上面的角色与任务优化。"
         try:
@@ -294,6 +296,7 @@ def optimize(text: str) -> str:
         f"3. 用中文，不要 markdown；\n"
         f"4. 严格按示范的格式输出。"
         f"{example}{mat_block}"
+        + safety_guard.SAFETY_RULES
     )
     user_prompt = (
         f"请按【优化后】+【补充了】两段格式优化下面这条「{scene['name']}」类提示词：\n\n"
