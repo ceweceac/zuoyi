@@ -393,26 +393,31 @@ _SB_SYS_SHOT = (
 
 
 def _polish_segment(seg_text: str, is_intro: bool) -> str:
-    """润色单个段落(序言或一镜)。锚点哨兵保护+还原；失败/丢锚点则原样返回该段。"""
+    """润色单个段落(序言或一镜)。锚点哨兵保护+还原；锚点丢失则重试一次，
+    重试仍不全才降级为原段——避免因 LLM 偶发漏还一个锚点就整段丢弃润色。"""
     from . import safety_guard, llm
     if not seg_text.strip():
         return seg_text
     protected, amap = _protect_anchors(seg_text)
     sys_p = (_SB_SYS_INTRO if is_intro else _SB_SYS_SHOT) + safety_guard.SAFETY_RULES
-    try:
-        r = llm.raw_chat(sys_p, protected, temperature=0.5, max_tokens=600)
-        if r and getattr(r, "text", ""):
-            # 只做哨兵→锚点的直接还原(不在段中补清单，避免镜次里插入突兀的【引用素材】)
-            txt = r.text.strip()
-            for token, anchor in amap.items():
-                txt = txt.replace(token, anchor)
-            # 单段兜底：润色后锚点数必须≥原段，否则整段降级用原文
-            # (逐镜切分段落很小，降级单段损失也小，且保证镜次内锚点原位不缺)
-            if _anchors_preserved(seg_text, txt) and "〖REF" not in txt:
-                return txt
-            log.warning("storyboard 单段锚点不全，保留原段")
-    except Exception as e:
-        log.warning("storyboard 单段润色失败，保留原段: %s", e)
+    # 两次机会：第一次常规，第二次把"锚点必须全保"要求顶到 user prompt 最前、降低温度
+    attempts = [
+        (protected, 0.5),
+        ("【务必保留原文中所有 〖REF数字〗 记号，一个都不能少、位置不动】\n" + protected, 0.2),
+    ]
+    for i, (up, temp) in enumerate(attempts):
+        try:
+            r = llm.raw_chat(sys_p, up, temperature=temp, max_tokens=600)
+            if r and getattr(r, "text", ""):
+                txt = r.text.strip()
+                for token, anchor in amap.items():
+                    txt = txt.replace(token, anchor)
+                if _anchors_preserved(seg_text, txt) and "〖REF" not in txt:
+                    return txt
+                log.warning("storyboard 单段锚点不全(第%d次)", i + 1)
+        except Exception as e:
+            log.warning("storyboard 单段润色失败(第%d次): %s", i + 1, e)
+    log.warning("storyboard 单段两次均未保住锚点，降级用原段")
     return seg_text
 
 
