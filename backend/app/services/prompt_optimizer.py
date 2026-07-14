@@ -236,10 +236,14 @@ def looks_like_prompt(text: str) -> bool:
     if any(t in s for t in ("优化提示词", "优化这个提示词", "帮我优化prompt",
                             "帮我改提示词", "润色提示词", "完善提示词")):
         return True
-    if any(q in s for q in _QUESTION_HINTS):
-        return False
     hits = sum(1 for w in _CREATIVE_HINTS if w in s)
-    # 三档（非疑问句前提下）：
+    # 疑问词否决：只对短/中文本生效。长分镜脚本（"…石台上，双眼紧闭？…"这类
+    # 内嵌一个问号的创作描述）不该因单个问号被当成提问而拒之门外——用创作词密度兜底：
+    # 长文本(≥40字)且创作词很多(≥4)时，即便含问号也按 prompt 处理。
+    is_long_creative = len(s) >= 40 and hits >= 4
+    if not is_long_creative and any(q in s for q in _QUESTION_HINTS):
+        return False
+    # 三档（非疑问句 / 长创作文本前提下）：
     # - 短文本(<15字)：需 ≥3 创作词（纯画面短描述如"白衣剑客站桃花树下"）
     # - 中文本(15~24字)：需 ≥2 创作词
     # - 长文本(≥25字)：含 ≥1 创作词即可（够长的陈述句基本在描述画面/镜头）

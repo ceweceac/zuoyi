@@ -57,6 +57,17 @@ _KNOWN_MODELS = {
     "gemini3.1", "deepseek-v4", "happyhorse", "dramatv", "dtv", "drama",
 }
 
+# 真实影视器材/镜头/画质参考名白名单（小写）。这些不是"AI 生成模型"，而是 LLM 优化
+# 视频/画面 prompt 时会正当引用的真实电影器材（如 Cooke S7 镜头、ARRI ALEXA LF 机身）。
+# 它们符合"模型名样式"（字母+数字，如 s7）但完全合法，不该被当幻觉拦截。
+_KNOWN_GEAR = {
+    "s7", "s8", "s4",          # Cooke S 系列镜头
+    "alexa", "lf", "alexa35",  # ARRI ALEXA / LF / 35
+    "cooke", "arri", "red", "venice", "sony",  # 器材品牌
+    "imax", "35mm", "16mm", "70mm",            # 胶片规格
+    "k35", "superspeed",                        # 常见镜头系列
+}
+
 # 明确禁止的错误实体名：LLM 一旦吐出这些，直接判幻觉（即使将来 KB 里误混入也拦）。
 _FORBIDDEN = {"seedream"}
 
@@ -107,6 +118,9 @@ def detect(answer: str, kb_corpus_lower: str = "") -> list:
             continue
         # 已知模型名（或其前缀）→ 放行
         if _known_prefix(tl):
+            continue
+        # 真实影视器材/镜头名（Cooke S7、ALEXA LF 等）→ 放行，不是 AI 模型幻觉
+        if tl in _KNOWN_GEAR:
             continue
         # KB 语料里出现过 → 放行（有据）
         if kb_corpus_lower and tl in kb_corpus_lower:
