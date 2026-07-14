@@ -113,15 +113,41 @@ _STRONG_SIGNALS = [
 ]
 
 
+# 视频语境信号：出现这些说明是"多镜头视频/分镜脚本"，而非单图生成。
+# 用于给"全景"等图片类强信号加护栏——"全景"在视频里是景别术语(和近景/远景并列)，
+# 不代表要生成 720°VR 全景图。
+_VIDEO_CONTEXT = (
+    "镜头", "运镜", "长镜头", "第一镜", "第二镜", "第三镜", "第四镜", "第五镜",
+    "分镜", "镜，", "一镜", "近景", "远景", "中景", "特写", "推镜", "拉镜",
+    "跟随", "俯拍", "仰拍", "低角度", "短片", "视频", "动态",
+)
+
+
+def _looks_like_video(s: str) -> bool:
+    """是否明显是视频/分镜脚本：≥2 个视频语境信号即判定。"""
+    return sum(1 for w in _VIDEO_CONTEXT if w in s) >= 2
+
+
+# 视频语境下应让位、不该抢跑的图片类强信号子类（这些本质是"生成一张图"的特殊格式）。
+_IMAGE_ONLY_STRONG_SUBS = {"25宫格", "九宫格", "四宫格", "全景",
+                           "光影校正", "3秒前", "5秒后",
+                           "风格迁移", "色调调整"}
+
+
 def _pick_official_scene(text: str):
     """从用户描述识别官方场景。返回 scene dict 或 None（让上层退回内置场景）。"""
     if not _OFFICIAL_SCENES:
         return None
     s = text.lower()
+    is_video = _looks_like_video(s)
 
-    # 0) 强信号优先：特殊格式/操作类，命中即定位
+    # 0) 强信号优先：特殊格式/操作类，命中即定位。
+    #    但若明显是视频脚本，图片类强信号(全景/宫格/调色等)让位——避免"全景"这种
+    #    景别词把多镜头视频脚本误判成 720°VR 单图生成。
     for keys, use, sub_kw in _STRONG_SIGNALS:
         if any(k in s for k in keys):
+            if is_video and sub_kw in _IMAGE_ONLY_STRONG_SUBS:
+                continue
             sc = _find_scene(use, sub_kw)
             if sc:
                 return sc
