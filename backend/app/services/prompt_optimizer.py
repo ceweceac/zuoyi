@@ -283,10 +283,10 @@ def looks_like_prompt(text: str) -> bool:
 # 引用锚点保留约束：@[图片N] / @[音频N] 是用户绑定的参考素材锚点（哪一镜用哪张图/哪段音），
 # 是脚本的关键语义，优化时 LLM 绝不能删改或改写，否则整条 prompt 失去可用性。
 _REF_KEEP_RULE = (
-    "\n【最重要·引用锚点】用户文本里的 @[图片N]、@[音频N]（N 为数字）是绑定的参考素材锚点，"
-    "必须在优化结果里**原样逐字保留**、保持在原来的镜次/位置上，"
-    "**绝不允许删除、改写、合并、翻译或改变编号**。逐一核对：输入有几个 @[图片N]/@[音频N]，"
-    "输出就必须有几个，一个都不能少。\n"
+    "\n【最重要·引用锚点】用户文本里形如 〖REFk〗 的记号是绑定的参考素材/音频占位符，"
+    "**必须原样逐字保留**在它所在的镜次/位置上，**绝不允许删除、改写、合并、翻译或改变其中的数字**。"
+    "即使你在精简或合并句子，也**不得删掉任何一个 〖REFk〗**——每一个都对应用户的一张参考图或一段音频，"
+    "少一个都会让脚本失效。逐一核对：输入有几个 〖REF…〗，输出就必须有几个，一个都不能少。\n"
 )
 
 
@@ -309,6 +309,134 @@ def _anchors_preserved(src: str, out: str) -> bool:
     return all(out_a.get(k, 0) >= v for k, v in src_a.items())
 
 
+# 锚点哨兵：用 LLM 几乎不会改动的稳定记号占位，优化后再还原。
+# 比"命令 LLM 逐字保留"可靠得多——它怎么改写都碰不到真锚点。
+_SENTINEL_RE = re.compile(r"〖REF(\d+)〗")
+
+
+def _protect_anchors(text: str):
+    """把 @[图片N]/@[音频N] 逐个替换成 〖REFk〗 哨兵，返回 (替换后文本, {哨兵: 原锚点})。"""
+    mapping = {}
+    def _sub(m):
+        k = len(mapping)
+        token = f"〖REF{k}〗"
+        mapping[token] = m.group(0)
+        return token
+    protected = re.sub(r"@\[(?:图片|音频)\d+\]", _sub, text)
+    return protected, mapping
+
+
+def _restore_anchors(text: str, mapping: dict) -> str:
+    """把哨兵还原成原锚点；若 LLM 删掉了某些哨兵(整句精简)，把丢失的原锚点
+    按序补一份「参考素材清单」到末尾，保证锚点一个不少。"""
+    if not mapping:
+        return text
+    missing = []
+    for token, anchor in mapping.items():
+        if token in text:
+            text = text.replace(token, anchor)
+        else:
+            missing.append(anchor)
+    if missing:
+        # 去重保序，补一份清单，避免用户丢失参考图/音频引用
+        seen = set(); uniq = []
+        for a in missing:
+            if a not in seen:
+                seen.add(a); uniq.append(a)
+        log.warning("optimize: LLM 删除了 %d 个引用锚点，已在末尾补回清单", len(missing))
+        text = text.rstrip() + "\n\n【引用素材】" + "、".join(uniq)
+    return text
+
+
+# 分镜镜次标记：第一镜/第1镜/镜头1/分镜3 等。用于判断"结构化多镜头脚本"。
+_SHOT_MARK = re.compile(
+    r"第[一二三四五六七八九十\d]+镜|第[一二三四五六七八九十\d]+个?镜头|镜头[一二三四五六七八九十\d]+|分镜[一二三四五六七八九十\d]+")
+
+
+def _is_storyboard(text: str) -> bool:
+    """是否是结构化多镜头分镜脚本：≥2 个镜次标记 且 含 ≥3 个参考锚点。
+    这类脚本每一镜是独立单元，不能被整体改写/合并，只能逐镜保结构润色。"""
+    shots = len(_SHOT_MARK.findall(text))
+    anchors = sum(_ref_anchors(text).values())
+    return shots >= 2 and anchors >= 3
+
+
+def _split_shots(body: str):
+    """把分镜脚本按镜次标记切成有序段落：[(标记, 内容), ...]。
+    标记 '__intro__' 表示第一个镜次之前的序言(核心场景描述)。"""
+    parts = re.split(r"(第[一二三四五六七八九十\d]+镜|镜头[一二三四五六七八九十\d]+|分镜[一二三四五六七八九十\d]+)", body)
+    segs = []
+    if parts and parts[0].strip():
+        segs.append(("__intro__", parts[0]))
+    for i in range(1, len(parts), 2):
+        mark = parts[i]
+        content = parts[i + 1] if i + 1 < len(parts) else ""
+        segs.append((mark, content))
+    return segs
+
+
+_SB_SYS_INTRO = (
+    "你是 DramaTV 分镜脚本优化助手。下面是一段视频脚本的**开头场景描述**（不是完整脚本）。"
+    "请只在原意基础上把画面/氛围/人物细节补充得更具体，适合 AI 生视频。\n"
+    "【硬规则】① 文中形如 〖REFk〗 的记号必须原样逐字保留、位置不动、绝不删改或改数字"
+    "（每个都是用户绑定的参考图/音频）；② 不要新增/删减内容之外的镜次编号；"
+    "③ 保留台词、器材名(ALEXA/Cooke等)照写；④ 中文，不要 markdown，只输出润色后的这段文字。"
+)
+_SB_SYS_SHOT = (
+    "你是 DramaTV 分镜脚本优化助手。下面是视频脚本里**单独一镜**的内容。"
+    "请只润色这一镜：把景别、镜头运动、人物动作/外貌、光影氛围补充得更具体，适合 AI 生视频。\n"
+    "【硬规则】① 文中形如 〖REFk〗 的记号必须原样逐字保留、位置不动、绝不删改或改数字"
+    "（每个都是用户绑定的参考图/音频）；② 这是单独一镜，**不要拆成多镜、不要加镜次编号**；"
+    "③ 保留原有台词、声音描述、器材名(ALEXA/Cooke等)照写；④ 中文，不要 markdown，"
+    "只输出这一镜润色后的内容本身（不要重复镜次标题）。"
+)
+
+
+def _polish_segment(seg_text: str, is_intro: bool) -> str:
+    """润色单个段落(序言或一镜)。锚点哨兵保护+还原；失败/丢锚点则原样返回该段。"""
+    from . import safety_guard, llm
+    if not seg_text.strip():
+        return seg_text
+    protected, amap = _protect_anchors(seg_text)
+    sys_p = (_SB_SYS_INTRO if is_intro else _SB_SYS_SHOT) + safety_guard.SAFETY_RULES
+    try:
+        r = llm.raw_chat(sys_p, protected, temperature=0.5, max_tokens=600)
+        if r and getattr(r, "text", ""):
+            # 只做哨兵→锚点的直接还原(不在段中补清单，避免镜次里插入突兀的【引用素材】)
+            txt = r.text.strip()
+            for token, anchor in amap.items():
+                txt = txt.replace(token, anchor)
+            # 单段兜底：润色后锚点数必须≥原段，否则整段降级用原文
+            # (逐镜切分段落很小，降级单段损失也小，且保证镜次内锚点原位不缺)
+            if _anchors_preserved(seg_text, txt) and "〖REF" not in txt:
+                return txt
+            log.warning("storyboard 单段锚点不全，保留原段")
+    except Exception as e:
+        log.warning("storyboard 单段润色失败，保留原段: %s", e)
+    return seg_text
+
+
+def _optimize_storyboard(body: str) -> str:
+    """A 方案：代码按镜次切分，逐段(序言+每一镜)独立润色再原样拼回。
+    镜次结构与锚点由代码保证——LLM 只在单段内润色，跑不偏；单段失败降级为原段。"""
+    segs = _split_shots(body)
+    if len(segs) < 2:
+        return ""   # 没切出多段，交给常规流程
+    out_parts = []
+    for mark, content in segs:
+        polished = _polish_segment(content, is_intro=(mark == "__intro__"))
+        if mark == "__intro__":
+            out_parts.append(polished.strip())
+        else:
+            # 原样拼回镜次标记 + 润色内容，保证镜次结构/顺序不变
+            out_parts.append(f"{mark}{polished}")
+    result = "\n".join(p for p in out_parts if p.strip())
+    log.info("prompt optimize via storyboard(逐镜切分): 段数=%d 锚点=%d/%d",
+             len(segs), sum(_ref_anchors(result).values()), sum(_ref_anchors(body).values()))
+    # 调用方(pipeline)会加"帮你把提示词完善了一版"前缀，这里只返回正文
+    return result if result.strip() else ""
+
+
 def optimize(text: str) -> str:
     """分场景 + 标杆示例优化用户 prompt。失败返回空串（调用方退回正常流程）。"""
     if not (settings.llm_enabled and settings.llm_api_key):
@@ -316,8 +444,20 @@ def optimize(text: str) -> str:
     body = re.sub(r"(优化提示词|优化这个提示词|帮我优化prompt|帮我改提示词|润色提示词|完善提示词)[:：]?",
                   "", text).strip() or text
 
+    # A 方案：结构化多镜头分镜脚本 → 走逐镜保结构润色，绝不整体改写/合并镜次。
+    if _is_storyboard(body):
+        sb = _optimize_storyboard(body)
+        if sb:
+            return sb
+        # 逐镜优化失败 → 继续走下面常规流程兜底
+
+    # 锚点保护：优化前把 @[图片N]/@[音频N] 换成哨兵，喂给 LLM 的是哨兵版；
+    # 场景识别仍用原 body（不受影响）。LLM 输出后再把哨兵还原成真锚点。
+    has_anchor = _has_ref_anchor(body)
+    body_llm, anchor_map = _protect_anchors(body) if has_anchor else (body, {})
+
     from . import safety_guard
-    ref_rule = _REF_KEEP_RULE if _has_ref_anchor(body) else ""
+    ref_rule = _REF_KEEP_RULE if has_anchor else ""
     # 优先用官方场景指令（26条专家级），命中则直接用它优化，质量最高
     official = _pick_official_scene(body)
     if official:
@@ -328,20 +468,15 @@ def optimize(text: str) -> str:
             + ref_rule
             + safety_guard.SAFETY_RULES
         )
-        user_prompt = f"用户输入：{body}\n\n请按上面的角色与任务优化。"
+        # 喂给 LLM 的是哨兵版（锚点已被 〖REFk〗 占位保护）
+        user_prompt = f"用户输入：{body_llm}\n\n请按上面的角色与任务优化。"
         try:
             from . import llm
             r = llm.raw_chat(sys_prompt, user_prompt, temperature=0.7, max_tokens=1200)
             if r and getattr(r, "text", ""):
-                out = r.text.strip()
-                # 锚点兜底：LLM 未能保留 @[图片N]/@[音频N] → 视为优化失败，退回内置分支重试，
-                # 绝不把丢了参考图引用的残缺 prompt 发给用户。
-                if not _anchors_preserved(body, out):
-                    log.warning("official optimize 丢失引用锚点，退回内置重试: %s/%s",
-                                official["use"], official["sub"])
-                else:
-                    log.info("prompt optimize via official scene: %s/%s", official["use"], official["sub"])
-                    return out
+                out = _restore_anchors(r.text.strip(), anchor_map)
+                log.info("prompt optimize via official scene: %s/%s", official["use"], official["sub"])
+                return out
         except Exception as e:
             log.warning("official optimize 失败，退回内置: %s", e)
 
@@ -369,21 +504,15 @@ def optimize(text: str) -> str:
     )
     user_prompt = (
         f"请按【优化后】+【补充了】两段格式优化下面这条「{scene['name']}」类提示词：\n\n"
-        f"原提示词：{body}"
+        f"原提示词：{body_llm}"
     )
     try:
         from . import llm
-        # 含引用锚点的长脚本要"保留原文+扩写"，给足 token 上限避免截断把尾部锚点切掉。
-        max_toks = 1200 if _has_ref_anchor(body) else 800
+        # 含引用锚点的长脚本要"保留原文+扩写"，给足 token 上限避免截断把尾部内容切掉。
+        max_toks = 1200 if has_anchor else 800
         r = llm.raw_chat(sys_prompt, user_prompt, temperature=0.7, max_tokens=max_toks)
         if r and getattr(r, "text", ""):
-            out = r.text.strip()
-            # 最后兜底：内置分支也没保住锚点 → 返回空串，让 pipeline 退回正常流程(原样处理)，
-            # 不把丢了参考图引用的残缺 prompt 发给用户。
-            if not _anchors_preserved(body, out):
-                log.warning("内置 optimize 仍丢失引用锚点，放弃优化退回正常流程")
-                return ""
-            return out
+            return _restore_anchors(r.text.strip(), anchor_map)
     except Exception as e:
         log.warning("prompt optimize 失败: %s", e)
     return ""
