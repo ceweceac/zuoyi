@@ -348,6 +348,23 @@ def _restore_anchors(text: str, mapping: dict) -> str:
     return text
 
 
+# LLM 偶发把"安全调整/补充了/优化说明"等给人看的元注释写进正文——这些不能进生成器。
+# 整行以这些前缀开头即删除（成品提示词里绝不该出现解说）。
+_META_LINE = re.compile(
+    r"^\s*(安全调整|安全说明|内容安全|优化说明|补充了|改动说明|说明[:：]|注[:：]|备注)[:：]?.*$",
+    re.MULTILINE)
+
+
+def _strip_meta(text: str) -> str:
+    """删掉『安全调整：…』『补充了：…』等给人看的解说行，只留纯提示词正文。"""
+    if not text:
+        return text
+    cleaned = _META_LINE.sub("", text)
+    # 折叠因删行产生的多余空行
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 # 分镜镜次标记：第一镜/第1镜/镜头1/分镜3 等。用于判断"结构化多镜头脚本"。
 _SHOT_MARK = re.compile(
     r"第[一二三四五六七八九十\d]+镜|第[一二三四五六七八九十\d]+个?镜头|镜头[一二三四五六七八九十\d]+|分镜[一二三四五六七八九十\d]+")
@@ -412,6 +429,7 @@ def _polish_segment(seg_text: str, is_intro: bool) -> str:
                 txt = r.text.strip()
                 for token, anchor in amap.items():
                     txt = txt.replace(token, anchor)
+                txt = _strip_meta(txt)   # 删掉『安全调整：』等解说行，只留纯提示词
                 if _anchors_preserved(seg_text, txt) and "〖REF" not in txt:
                     return txt
                 log.warning("storyboard 单段锚点不全(第%d次)", i + 1)
@@ -468,8 +486,8 @@ def optimize(text: str) -> str:
     if official:
         sys_prompt = (
             official["system"]
-            + "\n\n【输出要求】先给出优化后的成品提示词，再用一行『补充了：』简述补充了哪些维度。"
-              "用中文，不要 markdown。"
+            + "\n\n【输出要求】只输出优化后的成品提示词本身，用中文，不要 markdown，"
+              "不要任何解说/前言/结语（如『补充了』『优化说明』），因为成品会直接喂给生成器。"
             + ref_rule
             + safety_guard.SAFETY_RULES
         )
@@ -479,7 +497,7 @@ def optimize(text: str) -> str:
             from . import llm
             r = llm.raw_chat(sys_prompt, user_prompt, temperature=0.7, max_tokens=1200)
             if r and getattr(r, "text", ""):
-                out = _restore_anchors(r.text.strip(), anchor_map)
+                out = _strip_meta(_restore_anchors(r.text.strip(), anchor_map))
                 log.info("prompt optimize via official scene: %s/%s", official["use"], official["sub"])
                 return out
         except Exception as e:
@@ -502,13 +520,14 @@ def optimize(text: str) -> str:
         f"1. 只在用户原意基础上补充完善，绝不改变核心创意、不编造无关内容；\n"
         f"2. 优化后的提示词要具体、可直接用于生成，避免空泛形容词堆砌；\n"
         f"3. 用中文，不要 markdown；\n"
-        f"4. 严格按示范的格式输出。"
+        f"4. 只输出成品提示词本身，不要任何解说/前言/结语（如『补充了』『优化说明』），"
+        f"因为成品会直接喂给生成器。"
         f"{example}{mat_block}"
         + ref_rule
         + safety_guard.SAFETY_RULES
     )
     user_prompt = (
-        f"请按【优化后】+【补充了】两段格式优化下面这条「{scene['name']}」类提示词：\n\n"
+        f"请优化下面这条「{scene['name']}」类提示词，只输出优化后的成品本身：\n\n"
         f"原提示词：{body_llm}"
     )
     try:
@@ -517,7 +536,7 @@ def optimize(text: str) -> str:
         max_toks = 1200 if has_anchor else 800
         r = llm.raw_chat(sys_prompt, user_prompt, temperature=0.7, max_tokens=max_toks)
         if r and getattr(r, "text", ""):
-            return _restore_anchors(r.text.strip(), anchor_map)
+            return _strip_meta(_restore_anchors(r.text.strip(), anchor_map))
     except Exception as e:
         log.warning("prompt optimize 失败: %s", e)
     return ""
