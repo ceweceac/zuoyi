@@ -280,6 +280,35 @@ def looks_like_prompt(text: str) -> bool:
     return hits >= 3
 
 
+# 引用锚点保留约束：@[图片N] / @[音频N] 是用户绑定的参考素材锚点（哪一镜用哪张图/哪段音），
+# 是脚本的关键语义，优化时 LLM 绝不能删改或改写，否则整条 prompt 失去可用性。
+_REF_KEEP_RULE = (
+    "\n【最重要·引用锚点】用户文本里的 @[图片N]、@[音频N]（N 为数字）是绑定的参考素材锚点，"
+    "必须在优化结果里**原样逐字保留**、保持在原来的镜次/位置上，"
+    "**绝不允许删除、改写、合并、翻译或改变编号**。逐一核对：输入有几个 @[图片N]/@[音频N]，"
+    "输出就必须有几个，一个都不能少。\n"
+)
+
+
+def _ref_anchors(text: str):
+    """返回文本里所有 @[图片N]/@[音频N] 锚点的多重集合(按出现次数计)。"""
+    from collections import Counter
+    return Counter(re.findall(r"@\[(?:图片|音频)\d+\]", text or ""))
+
+
+def _has_ref_anchor(text: str) -> bool:
+    return bool(re.search(r"@\[(图片|音频)\d+\]", text or ""))
+
+
+def _anchors_preserved(src: str, out: str) -> bool:
+    """校验优化输出 out 是否完整保留了 src 里的每个引用锚点(数量不少于原文)。"""
+    src_a = _ref_anchors(src)
+    if not src_a:
+        return True
+    out_a = _ref_anchors(out)
+    return all(out_a.get(k, 0) >= v for k, v in src_a.items())
+
+
 def optimize(text: str) -> str:
     """分场景 + 标杆示例优化用户 prompt。失败返回空串（调用方退回正常流程）。"""
     if not (settings.llm_enabled and settings.llm_api_key):
@@ -288,6 +317,7 @@ def optimize(text: str) -> str:
                   "", text).strip() or text
 
     from . import safety_guard
+    ref_rule = _REF_KEEP_RULE if _has_ref_anchor(body) else ""
     # 优先用官方场景指令（26条专家级），命中则直接用它优化，质量最高
     official = _pick_official_scene(body)
     if official:
@@ -295,6 +325,7 @@ def optimize(text: str) -> str:
             official["system"]
             + "\n\n【输出要求】先给出优化后的成品提示词，再用一行『补充了：』简述补充了哪些维度。"
               "用中文，不要 markdown。"
+            + ref_rule
             + safety_guard.SAFETY_RULES
         )
         user_prompt = f"用户输入：{body}\n\n请按上面的角色与任务优化。"
@@ -302,8 +333,15 @@ def optimize(text: str) -> str:
             from . import llm
             r = llm.raw_chat(sys_prompt, user_prompt, temperature=0.7, max_tokens=1200)
             if r and getattr(r, "text", ""):
-                log.info("prompt optimize via official scene: %s/%s", official["use"], official["sub"])
-                return r.text.strip()
+                out = r.text.strip()
+                # 锚点兜底：LLM 未能保留 @[图片N]/@[音频N] → 视为优化失败，退回内置分支重试，
+                # 绝不把丢了参考图引用的残缺 prompt 发给用户。
+                if not _anchors_preserved(body, out):
+                    log.warning("official optimize 丢失引用锚点，退回内置重试: %s/%s",
+                                official["use"], official["sub"])
+                else:
+                    log.info("prompt optimize via official scene: %s/%s", official["use"], official["sub"])
+                    return out
         except Exception as e:
             log.warning("official optimize 失败，退回内置: %s", e)
 
@@ -326,6 +364,7 @@ def optimize(text: str) -> str:
         f"3. 用中文，不要 markdown；\n"
         f"4. 严格按示范的格式输出。"
         f"{example}{mat_block}"
+        + ref_rule
         + safety_guard.SAFETY_RULES
     )
     user_prompt = (
@@ -334,9 +373,17 @@ def optimize(text: str) -> str:
     )
     try:
         from . import llm
-        r = llm.raw_chat(sys_prompt, user_prompt, temperature=0.7, max_tokens=800)
+        # 含引用锚点的长脚本要"保留原文+扩写"，给足 token 上限避免截断把尾部锚点切掉。
+        max_toks = 1200 if _has_ref_anchor(body) else 800
+        r = llm.raw_chat(sys_prompt, user_prompt, temperature=0.7, max_tokens=max_toks)
         if r and getattr(r, "text", ""):
-            return r.text.strip()
+            out = r.text.strip()
+            # 最后兜底：内置分支也没保住锚点 → 返回空串，让 pipeline 退回正常流程(原样处理)，
+            # 不把丢了参考图引用的残缺 prompt 发给用户。
+            if not _anchors_preserved(body, out):
+                log.warning("内置 optimize 仍丢失引用锚点，放弃优化退回正常流程")
+                return ""
+            return out
     except Exception as e:
         log.warning("prompt optimize 失败: %s", e)
     return ""
