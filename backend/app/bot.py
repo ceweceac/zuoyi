@@ -176,16 +176,63 @@ class _Handler(ChatbotHandler):
         return AckMessage.STATUS_OK, "OK"
 
 
-def start_in_background() -> asyncio.Task:
-    """在 FastAPI 事件循环里挂一个钉钉 Stream 任务。"""
-    credential = dingtalk_stream.Credential(settings.dingtalk_client_id,
-                                            settings.dingtalk_client_secret)
-    client = dingtalk_stream.DingTalkStreamClient(credential)
+async def _stream_supervisor():
+    """监督钉钉 Stream 连接，断了自动重连——永不让机器人静默变哑。
+
+    为什么必须自己兜底：SDK 的 async `client.start()` 里 `while True` 循环用
+    `async with websockets.connect(...)` 且**外层无 try/except**，网络一抖 `async for`
+    抛 ConnectionClosedError，异常直接冒出、整个 start() 任务死掉、永不重连——
+    进程还活着、health 还 200，但收不到任何钉钉消息（曾真实发生：连接建立后近 2 天
+    无消息，用户发"你好"无回应）。SDK 自带重连的是同步 `start_forever()`，但它用
+    asyncio.run() 塞不进已在跑的 FastAPI 事件循环。故在这里做 async 原生的监督重连。
+    """
     handler = _Handler()
     _bot_handler_ref["h"] = handler
-    client.register_callback_handler(ChatbotMessage.TOPIC, handler)
-    log.info("DingTalk Stream client starting, clientId=%s", settings.dingtalk_client_id)
-    return asyncio.create_task(client.start())
+    backoff = 1
+    fails = 0            # 连续失败次数
+    alerted = False      # 是否已就本轮故障告过警（避免刷屏）
+    ALERT_AFTER = 5      # 连续失败达此次数才告警（约累计 30s+ 仍连不上）
+    while True:
+        try:
+            credential = dingtalk_stream.Credential(settings.dingtalk_client_id,
+                                                    settings.dingtalk_client_secret)
+            client = dingtalk_stream.DingTalkStreamClient(credential)
+            client.register_callback_handler(ChatbotMessage.TOPIC, handler)
+            log.info("DingTalk Stream client starting, clientId=%s", settings.dingtalk_client_id)
+            await client.start()
+            # start() 正常返回也视为断开（SDK 正常不会返回），继续重连。
+            # 能连上跑一段说明网络已恢复，重置退避与失败计数，下次断开快速重连。
+            log.warning("DingTalk Stream 连接结束，%ds 后重连", backoff)
+            backoff = 1
+            fails = 0
+            alerted = False
+        except asyncio.CancelledError:
+            log.info("DingTalk Stream 监督任务被取消（正常关停）")
+            raise
+        except Exception as e:
+            fails += 1
+            log.exception("DingTalk Stream 连接异常(第%d次)，%ds 后重连: %s", fails, backoff, e)
+            # 连续失败到阈值仍恢复不了 → 告警一次（避免"哑了没人知道"）。
+            # 告警本身不能拖垮重连循环，放线程池且异常吞掉。
+            if fails >= ALERT_AFTER and not alerted:
+                alerted = True
+                try:
+                    from .services import alert
+                    await asyncio.to_thread(
+                        alert.send_system_alert,
+                        "钉钉机器人掉线，自动重连中",
+                        f"钉钉 Stream 长连接已连续 {fails} 次重连失败，机器人当前可能收不到消息。"
+                        f"系统仍在自动重连；若持续未恢复请检查网络与钉钉凭证。",
+                    )
+                except Exception as ae:
+                    log.warning("掉线告警发送失败: %s", ae)
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, 30)   # 指数退避，封顶 30s，避免风暴
+
+
+def start_in_background() -> asyncio.Task:
+    """在 FastAPI 事件循环里挂钉钉 Stream 监督任务（自愈重连）。"""
+    return asyncio.create_task(_stream_supervisor())
 
 
 def get_handler() -> ChatbotHandler:

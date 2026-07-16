@@ -29,6 +29,49 @@ def _sign(secret: str) -> tuple:
     return ts, sign
 
 
+def send_system_alert(title: str, detail: str) -> bool:
+    """系统级告警（非转人工）：如钉钉长连接掉线自愈失败。发一张简洁卡片到同一告警群。
+
+    独立于 send_alert（那是转人工业务卡片，字段耦合重）。复用同一 webhook + 加签。
+    """
+    webhook = (settings.alert_webhook or "").strip()
+    if not webhook:
+        log.warning("system_alert 跳过：alert_webhook 未配置 — %s", title)
+        return False
+    from . import netguard
+    ok_url, block_reason = netguard.check_url(webhook)
+    if not ok_url:
+        log.warning("system_alert webhook 被安全策略拒绝：%s", block_reason)
+        return False
+    url = webhook
+    secret = (settings.alert_secret or "").strip()
+    if secret:
+        ts, sign = _sign(secret)
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}timestamp={ts}&sign={sign}"
+    admin_url = (settings.admin_url or "").strip().rstrip("/")
+    md = (
+        f"### 🚨 系统告警\n\n"
+        f"<font color=\"#d32f2f\">**{title}**</font>\n\n"
+        f"{detail}\n\n"
+        f"---\n时间：{time.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    if admin_url:
+        md += f"\n\n[👉 打开管理后台]({admin_url})"
+    payload = {"msgtype": "markdown", "markdown": {"title": f"系统告警：{title}", "text": md}}
+    try:
+        r = httpx.post(url, json=payload, timeout=10)
+        data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        if data.get("errcode") == 0:
+            log.info("system_alert sent ok, title=%s", title)
+            return True
+        log.warning("system_alert send failed: %s %s", r.status_code, r.text[:200])
+        return False
+    except Exception as e:
+        log.exception("system_alert exception: %s", e)
+        return False
+
+
 def send_alert(*,
                level: str,
                title: str,
