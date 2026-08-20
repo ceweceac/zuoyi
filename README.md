@@ -56,6 +56,7 @@ docker compose up -d --build
 - QA 知识库：增删改查、审核流、Excel 批量导入、热更新
 - QA 内容分支协作：在 `qa-staging` 编辑 Excel、自动校验/导入测试库，审核后合并 `main`（见 [qa/README.md](qa/README.md)）
 - QA Web 测试平台：伙伴浏览器编辑、负责人审核并导出正式环境变更包（见 [qa/PLATFORM.md](qa/PLATFORM.md)）
+- 异地伙伴开发：代码、测试后台与正式环境的完整隔离流程（见 [docs/伙伴测试环境操作说明.md](docs/伙伴测试环境操作说明.md)）
 - NiceGUI 管理后台：登录、概览 KPI、QA 管理、对话记录、未命中聚合
 - 审计：JSON 行文件 + DB 双写
 - JWT 鉴权：admin / auditor / editor / viewer
