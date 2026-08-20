@@ -1,0 +1,30 @@
+name: qa-workspace
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
+    image: qa-workspace:0.1.0
+    restart: unless-stopped
+    environment:
+      QA_WORKSPACE_MODE: "true"
+      QA_WORKSPACE_BASELINE_XLSX: /app/qa/qa_content.xlsx
+      QA_WORKSPACE_OWNER_USERNAME: ${QA_WORKSPACE_OWNER_USERNAME:-qa_owner}
+      QA_WORKSPACE_OWNER_PASSWORD: ${QA_WORKSPACE_OWNER_PASSWORD:?请设置负责人强密码}
+      QA_WORKSPACE_PARTNER_USERNAME: ${QA_WORKSPACE_PARTNER_USERNAME:-qa_partner}
+      QA_WORKSPACE_PARTNER_PASSWORD: ${QA_WORKSPACE_PARTNER_PASSWORD:?请设置伙伴强密码}
+      DATABASE_URL: sqlite:////app/data/qabot-workspace.db
+      JWT_SECRET: ${JWT_SECRET:?请设置至少32位JWT密钥}
+      QABOT_UI_STORAGE_SECRET: ${QABOT_UI_STORAGE_SECRET:?请设置至少32位会话密钥}
+      QABOT_DISABLE_BOT: "1"
+      QABOT_SKIP_CHARCHECK: "1"
+    volumes:
+      - qa-workspace-data:/app/data
+      - qa-workspace-logs:/app/logs
+    ports:
+      - "8081:8080"
+
+volumes:
+  qa-workspace-data:
+  qa-workspace-logs:

@@ -5,13 +5,23 @@ on:
     paths:
       - "qa/qa_content.xlsx"
       - "qa/qa_content.csv"
+      - "qa/PLATFORM.md"
       - "scripts/qa_content_workflow.py"
+      - "scripts/run_qa_workspace.py"
+      - "scripts/test_qa_workspace.py"
+      - "backend/app/**"
+      - "deploy/**"
   push:
     branches: [qa-staging]
     paths:
       - "qa/qa_content.xlsx"
       - "qa/qa_content.csv"
+      - "qa/PLATFORM.md"
       - "scripts/qa_content_workflow.py"
+      - "scripts/run_qa_workspace.py"
+      - "scripts/test_qa_workspace.py"
+      - "backend/app/**"
+      - "deploy/**"
 
 jobs:
   validate:
@@ -21,8 +31,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install openpyxl==3.1.2
-      - run: python -m unittest scripts/test_qa_content_workflow.py
+      - run: pip install openpyxl==3.1.2 sqlalchemy==2.0.30 pydantic-settings==2.2.1 'passlib[bcrypt]==1.7.4' bcrypt==4.0.1
+      - run: python -m unittest scripts/test_qa_content_workflow.py scripts/test_qa_workspace.py
       - run: python scripts/qa_content_workflow.py check
       - run: python scripts/qa_content_workflow.py sync-csv --csv /tmp/qa_content.csv
       - run: cmp qa/qa_content.csv /tmp/qa_content.csv

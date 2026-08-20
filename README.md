@@ -55,6 +55,7 @@ docker compose up -d --build
 - 多层防线：红线词 → 脱敏 → LLM → 敏感词 → 占位符回填 → 分级与水印
 - QA 知识库：增删改查、审核流、Excel 批量导入、热更新
 - QA 内容分支协作：在 `qa-staging` 编辑 Excel、自动校验/导入测试库，审核后合并 `main`（见 [qa/README.md](qa/README.md)）
+- QA Web 测试平台：伙伴浏览器编辑、负责人审核并导出正式环境变更包（见 [qa/PLATFORM.md](qa/PLATFORM.md)）
 - NiceGUI 管理后台：登录、概览 KPI、QA 管理、对话记录、未命中聚合
 - 审计：JSON 行文件 + DB 双写
 - JWT 鉴权：admin / auditor / editor / viewer

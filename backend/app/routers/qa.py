@@ -10,8 +10,10 @@ import io
 import logging
 
 from ..db import get_db, QaItem
+from ..config import settings
 from ..security import current_user, require_role
 from ..services.qa_store import store
+from ..services.qa_workspace import normalize_variants
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/qa", tags=["qa"])
@@ -21,18 +23,26 @@ MAX_EXCEL_BYTES = 10 * 1024 * 1024     # 10 MB
 MAX_EXCEL_ROWS = 5000                   # 单次最多 5000 行
 
 
+def _workspace_destructive_guard(user: dict) -> None:
+    if settings.qa_workspace_mode and user.get("role") != "admin":
+        raise HTTPException(403, "测试环境只有 QA 审核负责人可以停用或删除 QA")
+
+
 class QaIn(BaseModel):
     question: str
     answer: str
+    answer_variants: Optional[str] = None
     category: Optional[str] = None
     tags: Optional[str] = None
+    domains: Optional[str] = None
     version: Optional[int] = None       # 乐观锁：客户端传上来的当前版本
 
 
 def _to_dict(it: QaItem) -> dict:
     return {
         "id": it.id, "question": it.question, "answer": it.answer,
-        "category": it.category, "tags": it.tags, "status": it.status,
+        "answerVariants": it.answer_variants,
+        "category": it.category, "tags": it.tags, "domains": it.domains, "status": it.status,
         "version": it.version, "enabled": it.enabled,
         "createdBy": it.created_by, "createdAt": it.created_at.isoformat() if it.created_at else None,
         "updatedBy": it.updated_by, "updatedAt": it.updated_at.isoformat() if it.updated_at else None,
@@ -60,8 +70,14 @@ def list_qa(page: int = 1, size: int = 20,
 @router.post("")
 def create_qa(body: QaIn, db: Session = Depends(get_db),
               user: dict = Depends(require_role("admin", "editor"))):
-    it = QaItem(question=body.question, answer=body.answer, category=body.category,
-                tags=body.tags, status="pending", enabled="1", deleted="0", version=1,
+    try:
+        variants = normalize_variants(body.answer_variants)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    it = QaItem(question=body.question, answer=body.answer,
+                answer_variants=variants or None, category=body.category,
+                tags=body.tags, domains=body.domains,
+                status="pending", enabled="1", deleted="0", version=1,
                 created_by=user["username"], updated_by=user["username"])
     db.add(it); db.commit(); db.refresh(it)
     return _to_dict(it)
@@ -76,10 +92,16 @@ def update_qa(id: int, body: QaIn, db: Session = Depends(get_db),
     # 乐观锁：客户端传 version 时必须匹配，否则返回 409（并发修改冲突）
     if body.version is not None and it.version is not None and body.version != it.version:
         raise HTTPException(409, f"版本冲突：服务器版本 {it.version}，你的版本 {body.version}。请刷新后重试。")
+    try:
+        variants = normalize_variants(body.answer_variants)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     it.question = body.question
     it.answer = body.answer
+    it.answer_variants = variants or None
     it.category = body.category
     it.tags = body.tags
+    it.domains = body.domains
     it.status = "pending"
     it.version = (it.version or 1) + 1
     it.updated_by = user["username"]
@@ -106,7 +128,8 @@ def approve(id: int, db: Session = Depends(get_db),
 
 @router.post("/{id}/disable")
 def disable(id: int, db: Session = Depends(get_db),
-            _user: dict = Depends(require_role("admin", "editor"))):
+            user: dict = Depends(require_role("admin", "editor"))):
+    _workspace_destructive_guard(user)
     it = db.get(QaItem, id)
     if not it:
         raise HTTPException(404, "not found")
@@ -118,7 +141,8 @@ def disable(id: int, db: Session = Depends(get_db),
 
 @router.delete("/{id}")
 def delete(id: int, db: Session = Depends(get_db),
-           _user: dict = Depends(require_role("admin", "editor"))):
+           user: dict = Depends(require_role("admin", "editor"))):
+    _workspace_destructive_guard(user)
     it = db.get(QaItem, id)
     if not it:
         raise HTTPException(404, "not found")

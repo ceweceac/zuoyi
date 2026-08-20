@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from nicegui import ui
 
@@ -14,6 +15,7 @@ from .services.qa_store import store
 from .services import runtime_settings
 from .services import log_filter
 from .services import scheduler as bcast_scheduler
+from .services import qa_workspace
 from .utils import charcheck
 from .routers import auth, qa, conversation
 from . import bot
@@ -77,6 +79,8 @@ def _warn_default_passwords():
 async def lifespan(app: FastAPI):
     _enforce_jwt_secret()
     init_db()
+    if settings.qa_workspace_mode:
+        qa_workspace.ensure_workspace_ready()
     runtime_settings.load_from_db()
     _warn_default_passwords()
     store.reload()
@@ -88,21 +92,46 @@ async def lifespan(app: FastAPI):
     # verify 隔离实例）设 QABOT_DISABLE_BOT=1 可跳过，让 Web/UI 照常起、不被钉钉重试拖住。
     # 生产默认不设此变量，行为完全不变。
     task = None
-    if os.environ.get("QABOT_DISABLE_BOT") == "1":
+    if settings.qa_workspace_mode or os.environ.get("QABOT_DISABLE_BOT") == "1":
         log.warning("QABOT_DISABLE_BOT=1，跳过钉钉 Stream 连接（仅 Web/UI 模式）")
     else:
         task = bot.start_in_background()
-    bcast_scheduler.start()
+    scheduler_started = False
+    if settings.qa_workspace_mode:
+        log.warning("QA_WORKSPACE_MODE=1：群发与定时任务已停用，数据只写入测试库")
+    else:
+        bcast_scheduler.start()
+        scheduler_started = True
     log.info("App started")
     try:
         yield
     finally:
         if task is not None:
             task.cancel()
-        bcast_scheduler.stop()
+        if scheduler_started:
+            bcast_scheduler.stop()
 
 
 app = FastAPI(title="QA Bot", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def isolate_qa_workspace(request, call_next):
+    """测试工作台只暴露 QA 与登录相关入口，防止通过手输 URL 进入群发/设置页面。"""
+    if not settings.qa_workspace_mode:
+        return await call_next(request)
+    path = request.url.path
+    if path == "/":
+        return RedirectResponse("/qa", status_code=307)
+    allowed_prefixes = (
+        "/qa", "/login", "/api/qa", "/api/auth",
+        "/_nicegui", "/socket.io", "/favicon",
+    )
+    if path.startswith(allowed_prefixes):
+        return await call_next(request)
+    if path.startswith("/api/"):
+        return JSONResponse({"detail": "QA 测试工作台未开放该接口"}, status_code=404)
+    return RedirectResponse("/qa", status_code=307)
 
 # 静态文件目录（群发推送用：本地上传的图片/视频通过 /files/{name} 暴露访问 URL）
 _UPLOAD_DIR = Path("data/uploads")
@@ -125,7 +154,7 @@ if not os.environ.get("QABOT_UI_STORAGE_SECRET"):
 
 ui.run_with(
     app,
-    title="QA 客服机器人 · 管理后台",
+    title="QA 内容测试工作台" if settings.qa_workspace_mode else "QA 客服机器人 · 管理后台",
     storage_secret=_NICEGUI_STORAGE_SECRET,
     favicon="🤖",
 )

@@ -150,6 +150,17 @@ class Settings(BaseSettings):
     # === 服务 ===
     port: int = 8080
 
+    # === QA 内容测试工作台 ===
+    # 开启后只提供隔离的 QA 编辑/审核能力；不会连接钉钉，也不会启动群发调度。
+    qa_workspace_mode: bool = False
+    # 测试库的初始基线。留空时读取仓库 qa/qa_content.xlsx。
+    qa_workspace_baseline_xlsx: str = ""
+    # 测试平台只启用下面两个账号。公开部署时密码必须至少 12 位。
+    qa_workspace_owner_username: str = "qa_owner"
+    qa_workspace_owner_password: str = ""
+    qa_workspace_partner_username: str = "qa_partner"
+    qa_workspace_partner_password: str = ""
+
     # === 群发推送 ===
     # 文件公网访问基址（必须钉钉能访问到才能群发图片/视频卡片）。
     # 留空时 /files/ 走相对路径，仅本地预览可用，钉钉群里会失败。

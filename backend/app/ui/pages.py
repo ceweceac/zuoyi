@@ -17,6 +17,7 @@ from ..config import settings as cfg
 from ..services import runtime_settings as rts
 from ..services import llm as llm_svc
 from ..services import ingest as ingest_svc
+from ..services import qa_workspace as qa_workspace_svc
 
 
 def _csv_safe(value) -> str:
@@ -192,10 +193,12 @@ def _layout(active: str):
         "/failure-reports": "失败分析报告",
     }
     with ui.left_drawer(value=True, fixed=True).classes("bg-slate-900 text-white"):
-        ui.html('''
+        brand_title = "🧪 QA 测试工作台" if cfg.qa_workspace_mode else "🤖 QA Bot"
+        brand_subtitle = "内容编辑 · 审核 · 合并" if cfg.qa_workspace_mode else "钉钉智能客服管理"
+        ui.html(f'''
           <div style="padding:18px 16px 14px;border-bottom:1px solid rgba(255,255,255,0.07);margin-bottom:6px">
-            <div style="font-size:15px;font-weight:700;color:#fff;letter-spacing:-0.3px">🤖 QA Bot</div>
-            <div style="font-size:11px;color:rgba(255,255,255,0.3);margin-top:2px">钉钉智能客服管理</div>
+            <div style="font-size:15px;font-weight:700;color:#fff;letter-spacing:-0.3px">{brand_title}</div>
+            <div style="font-size:11px;color:rgba(255,255,255,0.3);margin-top:2px">{brand_subtitle}</div>
           </div>
         ''')
         items = [
@@ -208,6 +211,8 @@ def _layout(active: str):
             ("/users", "用户管理", "people"),
             ("/settings", "系统设置", "settings"),
         ]
+        if cfg.qa_workspace_mode:
+            items = [("/qa", "QA 内容编辑", "edit_note")]
         if A.role() != "admin":
             items = [it for it in items if it[0] not in ("/broadcast", "/failure-reports")]
         for path, name, icon in items:
@@ -222,6 +227,8 @@ def _layout(active: str):
             ui.html('<span style="font-size:13px;color:#9ca3af">控制台</span>')
             ui.html('<span style="font-size:13px;color:#d1d5db;margin:0 2px">/</span>')
             ui.html(f'<span style="font-size:13px;font-weight:600;color:#1e1b4b">{page_name}</span>')
+            if cfg.qa_workspace_mode:
+                ui.html('<span style="font-size:11px;font-weight:700;color:#b45309;background:#fef3c7;border:1px solid #fde68a;border-radius:999px;padding:2px 9px;margin-left:6px">TEST · 与正式库隔离</span>')
         with ui.row().classes("items-center gap-3"):
             u = A.user()
             role_map = {"admin": "管理员", "auditor": "审核员", "editor": "运营", "viewer": "只读"}
@@ -320,8 +327,10 @@ document.addEventListener('DOMContentLoaded', function(){
 
     with ui.element("div").props('id="login-card"'):
         ui.html('<div class="login-logo">🤖</div>')
-        ui.html('<div class="login-title">QA Bot 管理后台</div>')
-        ui.html('<div class="login-sub">钉钉智能客服 · Admin Console</div>')
+        login_title = "QA 内容测试工作台" if cfg.qa_workspace_mode else "QA Bot 管理后台"
+        login_subtitle = "独立测试库 · 修改后审核合并" if cfg.qa_workspace_mode else "钉钉智能客服 · Admin Console"
+        ui.html(f'<div class="login-title">{login_title}</div>')
+        ui.html(f'<div class="login-sub">{login_subtitle}</div>')
 
         username = ui.input("用户名", placeholder="请输入登录账号").classes("w-full").props("outlined dense")
         ui.element("div").style("height:10px")
@@ -343,7 +352,7 @@ document.addEventListener('DOMContentLoaded', function(){
                 "username": u.username, "displayName": u.display_name, "role": u.role,
             })
             ui.notify(f"欢迎回来，{u.display_name} 👋", type="positive")
-            ui.navigate.to("/")
+            ui.navigate.to("/qa" if cfg.qa_workspace_mode else "/")
 
         ui.element("div").style("height:16px")
         ui.button("登 录", on_click=do_login).props("color=primary").classes("w-full")
@@ -467,6 +476,9 @@ def _token_stats():
 def page_dashboard():
     if not _require_login():
         return
+    if cfg.qa_workspace_mode:
+        ui.navigate.to("/qa")
+        return
     _inject_zh()
     _layout("/")
 
@@ -551,6 +563,44 @@ def page_qa():
     state = {"keyword": "", "status": "", "page": 1, "size": 20}
     table = None
 
+    def can_destructive() -> bool:
+        """测试工作台里只有负责人可停用/删除；伙伴只负责内容新增和编辑。"""
+        return A.can_edit_qa() and (not cfg.qa_workspace_mode or A.role() == "admin")
+
+    def export_workspace_changes():
+        if A.role() != "admin":
+            ui.notify("只有 QA 审核负责人可以导出正式环境变更包", type="negative")
+            return
+        try:
+            payload, counts = qa_workspace_svc.export_change_package()
+        except Exception as exc:
+            ui.notify(str(exc), type="warning", multi_line=True)
+            return
+        filename = f"QA正式环境变更包-{datetime.now().strftime('%Y%m%d-%H%M%S')}.xlsx"
+        ui.download(payload, filename)
+        ui.notify(
+            f"已生成：新增 {counts['add']}、更新 {counts['update']}、停用 {counts['disable']}",
+            type="positive",
+        )
+
+    @ui.refreshable
+    def workspace_summary():
+        if not cfg.qa_workspace_mode:
+            return
+        _, counts = qa_workspace_svc.workspace_changes()
+        with ui.card().classes("w-full mt-4").style("border-left:4px solid #f59e0b!important;background:#fffbeb!important"):
+            with ui.row().classes("w-full items-center justify-between gap-4"):
+                with ui.column().classes("gap-1"):
+                    ui.label("🧪 QA 内容测试环境").classes("text-base font-semibold text-amber-900")
+                    ui.label("伙伴的修改只写入独立测试库，不会影响正式机器人。修改先进入待审核，负责人通过后才能导出。")\
+                        .classes("text-sm text-amber-800")
+                    ui.label(
+                        f"可合并：新增 {counts['add']} · 更新 {counts['update']} · 停用 {counts['disable']}　|　待审核 {counts['pending']}"
+                    ).classes("text-sm font-semibold text-amber-900")
+                if A.role() == "admin":
+                    ui.button("下载正式环境变更包", icon="download", on_click=export_workspace_changes)\
+                        .props("unelevated").style("background:#d97706;color:white")
+
     def load():
         nonlocal table
         db = SessionLocal()
@@ -590,6 +640,12 @@ def page_qa():
             stats_row.refresh()
         except Exception:
             pass
+        try:
+            workspace_summary.refresh()
+        except Exception:
+            pass
+
+    workspace_summary()
 
     # ── 工具栏第一行：搜索 + 主操作 ──
     with ui.row().classes("w-full mt-4 gap-2 items-center flex-wrap"):
@@ -602,12 +658,14 @@ def page_qa():
             ui.html('<div style="width:1px;height:28px;background:#e5e7eb;margin:0 4px"></div>')
             ui.upload(on_upload=lambda e: do_import(e), auto_upload=True, max_files=1)\
                 .props('accept=".xlsx" label="导入表格" dense outlined').classes("w-36")
-            async def _on_smart_upload(e):
-                await do_smart_import(e)
-            ui.upload(on_upload=_on_smart_upload, auto_upload=True, max_files=1)\
-                .props('accept=".txt,.md,.docx,.pdf" label="智能导入文档" dense outlined').classes("w-40")
-        ui.html('<div style="width:1px;height:28px;background:#e5e7eb;margin:0 4px"></div>')
-        ui.button("刷新知识库", icon="sync", on_click=lambda: (store.reload(), ui.notify(f"已刷新至第 {store.version} 版", type="positive"))).props("outline color=primary")
+            if not cfg.qa_workspace_mode:
+                async def _on_smart_upload(e):
+                    await do_smart_import(e)
+                ui.upload(on_upload=_on_smart_upload, auto_upload=True, max_files=1)\
+                    .props('accept=".txt,.md,.docx,.pdf" label="智能导入文档" dense outlined').classes("w-40")
+        if not cfg.qa_workspace_mode:
+            ui.html('<div style="width:1px;height:28px;background:#e5e7eb;margin:0 4px"></div>')
+            ui.button("刷新知识库", icon="sync", on_click=lambda: (store.reload(), ui.notify(f"已刷新至第 {store.version} 版", type="positive"))).props("outline color=primary")
 
         def do_dedupe():
             if not A.can_edit_qa():
@@ -615,14 +673,14 @@ def page_qa():
             n = ingest_svc.dedupe_existing()
             ui.notify(f"已清理重复条目 {n} 条", type="positive" if n > 0 else "info")
             load()
-        if A.can_edit_qa():
+        if A.can_edit_qa() and not cfg.qa_workspace_mode:
             ui.button("去重", icon="cleaning_services", on_click=do_dedupe).props("outline color=primary")
             ui.html('<div style="width:1px;height:28px;background:#e5e7eb;margin:0 4px"></div>')
 
         async def batch_delete_selected():
             """删除当前勾选的条目。"""
-            if not A.can_edit_qa():
-                ui.notify("无权限：仅 admin / editor 可删除知识库条目", type="negative"); return
+            if not can_destructive():
+                ui.notify("测试环境只有 QA 审核负责人可以删除条目", type="negative"); return
             sel = table.selected or []
             if not sel:
                 ui.notify("请先勾选要删除的条目", type="warning"); return
@@ -649,8 +707,8 @@ def page_qa():
 
         async def delete_all_filtered():
             """删除当前筛选条件下的全部条目（不限于勾选）。"""
-            if not A.can_edit_qa():
-                ui.notify("无权限：仅 admin / editor 可删除知识库条目", type="negative"); return
+            if not can_destructive():
+                ui.notify("测试环境只有 QA 审核负责人可以批量删除", type="negative"); return
             db = SessionLocal()
             try:
                 q = db.query(QaItem).filter(QaItem.deleted == "0")
@@ -685,7 +743,7 @@ def page_qa():
             ui.notify(f"已删除 {n} 条", type="positive")
             load()
 
-        if A.can_edit_qa():
+        if can_destructive():
             ui.button("批量删除选中", icon="delete_sweep", on_click=batch_delete_selected).props("outline color=negative")
             ui.button("删除筛选全部", icon="delete_forever", on_click=delete_all_filtered).props("outline color=negative")
 
@@ -754,14 +812,15 @@ def page_qa():
         selection="multiple",       # 表头出现勾选列，可多选/全选
     ).classes("w-full mt-2").props(TABLE_ZH_PROPS)
 
-    table.add_slot("body-cell-action", r"""
-        <q-td :props="props">
-            <q-btn dense flat label="编辑" color="primary" @click="$parent.$emit('edit', props.row)" style="font-size:12px"/>
-            <q-btn v-if="props.row.status_raw==='pending'" dense flat label="通过" color="positive" @click="$parent.$emit('approve', props.row)" style="font-size:12px"/>
-            <q-btn v-if="props.row.enabled==='是'" dense flat label="禁用" color="grey" @click="$parent.$emit('disable', props.row)" style="font-size:12px"/>
-            <q-btn dense flat label="删除" color="negative" @click="$parent.$emit('remove', props.row)" style="font-size:12px"/>
-        </q-td>
-    """)
+    action_slot = r'''<q-td :props="props">
+        <q-btn dense flat label="编辑" color="primary" @click="$parent.$emit('edit', props.row)" style="font-size:12px"/>'''
+    if A.can_approve():
+        action_slot += r'''<q-btn v-if="props.row.status_raw==='pending'" dense flat label="通过" color="positive" @click="$parent.$emit('approve', props.row)" style="font-size:12px"/>'''
+    if can_destructive():
+        action_slot += r'''<q-btn v-if="props.row.enabled==='是'" dense flat label="停用" color="grey" @click="$parent.$emit('disable', props.row)" style="font-size:12px"/>
+        <q-btn dense flat label="删除" color="negative" @click="$parent.$emit('remove', props.row)" style="font-size:12px"/>'''
+    action_slot += "</q-td>"
+    table.add_slot("body-cell-action", action_slot)
     table.on("edit",    lambda e: open_edit(e.args["id"]))
     table.on("approve", lambda e: do_approve(e.args["id"]))
     table.on("disable", lambda e: do_disable(e.args["id"]))
@@ -778,8 +837,13 @@ def page_qa():
                 db.close()
             q_in = ui.input("问题", value=it.question if it else "").classes("w-full")
             a_in = ui.textarea("答案", value=it.answer if it else "").classes("w-full").props("rows=8")
+            v_in = ui.textarea(
+                "备用答案（可选，每行一个）",
+                value=qa_workspace_svc.variants_as_lines(it.answer_variants if it else ""),
+            ).classes("w-full").props("rows=3")
             c_in = ui.input("分类", value=it.category if it else "").classes("w-full")
             t_in = ui.input("标签（逗号分隔）", value=it.tags if it else "").classes("w-full")
+            d_in = ui.input("业务域（逗号分隔）", value=it.domains if it else "").classes("w-full")
 
             def save():
                 # 授权校验：仅 admin/editor 可新增/编辑 KB（与 REST qa.py 的 require_role 一致）。
@@ -788,18 +852,29 @@ def page_qa():
                 if not A.can_edit_qa():
                     ui.notify("没有权限：仅管理员/编辑可新增或编辑知识库", type="negative")
                     return
+                if not str(q_in.value or "").strip() or not str(a_in.value or "").strip():
+                    ui.notify("问题和标准答案不能为空", type="negative")
+                    return
+                try:
+                    variants = qa_workspace_svc.normalize_variants(v_in.value)
+                except ValueError as exc:
+                    ui.notify(str(exc), type="negative")
+                    return
                 u = A.user()
                 db2 = SessionLocal()
                 try:
                     if qa_id:
                         cur = db2.get(QaItem, qa_id)
                         cur.question, cur.answer, cur.category, cur.tags = q_in.value, a_in.value, c_in.value, t_in.value
+                        cur.answer_variants = variants or None
+                        cur.domains = d_in.value
                         cur.status = "pending"
                         cur.version = (cur.version or 1) + 1
                         cur.updated_by = u["username"]
                     else:
                         db2.add(QaItem(
                             question=q_in.value, answer=a_in.value, category=c_in.value, tags=t_in.value,
+                            answer_variants=variants or None, domains=d_in.value,
                             status="pending", enabled="1", deleted="0", version=1,
                             created_by=u["username"], updated_by=u["username"],
                         ))
@@ -836,8 +911,8 @@ def page_qa():
         load()
 
     def do_disable(qa_id: int):
-        if not A.can_edit_qa():
-            ui.notify("没有权限：仅管理员/编辑可禁用 KB", type="negative")
+        if not can_destructive():
+            ui.notify("测试环境只有 QA 审核负责人可以停用 QA", type="negative")
             return
         db = SessionLocal()
         try:
@@ -849,8 +924,8 @@ def page_qa():
         ui.notify("已禁用", type="positive"); load()
 
     def do_delete(qa_id: int):
-        if not A.can_edit_qa():
-            ui.notify("没有权限：仅管理员/编辑可删除 KB", type="negative")
+        if not can_destructive():
+            ui.notify("测试环境只有 QA 审核负责人可以删除 QA", type="negative")
             return
         db = SessionLocal()
         try:

@@ -59,6 +59,7 @@ class QaItem(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     question = Column(String(1000), nullable=False)
     answer = Column(Text, nullable=False)
+    answer_variants = Column(Text)                         # 备用答案 JSON 数组
     category = Column(String(64))
     tags = Column(String(500))
     domains = Column(String(255))                          # 业务域标签（逗号分隔，多标签），供域路由缩小候选池用
@@ -394,13 +395,14 @@ def _migrate_uploaded_file_columns():
 
 
 def _migrate_qa_item_columns():
-    """轻量迁移：给 qa_item 表补 domains 列（业务域标签，供域路由用）。"""
+    """轻量迁移：给 qa_item 表补 QA 内容扩展列。"""
     from sqlalchemy import inspect, text
     insp = inspect(engine)
     if "qa_item" not in insp.get_table_names():
         return
     existing = {c["name"] for c in insp.get_columns("qa_item")}
     add_columns = {
+        "answer_variants": "TEXT",
         "domains": "VARCHAR(255)",
     }
     with engine.begin() as conn:
@@ -444,7 +446,8 @@ def seed():
                 SysUser(username="auditor", password=hash_password("auditor123"), display_name="审核员", role="auditor"),
                 SysUser(username="editor",  password=hash_password("editor123"),  display_name="运营",   role="editor"),
             ])
-        if db.query(QaItem).count() == 0:
+        # QA 测试工作台会在 init_db 后从审核基线表导入完整数据，不能先塞演示 QA。
+        if db.query(QaItem).count() == 0 and not settings.qa_workspace_mode:
             db.add_all([
                 QaItem(question="公司工作时间是？", answer="周一至周五 9:00-18:00，午休 12:00-13:30。",
                        category="考勤", status="approved", created_by="admin", approved_by="admin"),

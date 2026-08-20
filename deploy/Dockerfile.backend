@@ -14,6 +14,7 @@ COPY --from=deps /usr/local/bin /usr/local/bin
 
 # 拷贝代码
 COPY backend/app ./app
+COPY qa/qa_content.xlsx ./qa/qa_content.xlsx
 
 RUN useradd -r -u 1001 qabot && mkdir -p /app/data /app/logs && chown -R qabot /app
 USER qabot
