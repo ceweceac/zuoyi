@@ -54,6 +54,7 @@ docker compose up -d --build
 - OpenAI 兼容协议 LLM：通义 / DeepSeek / Kimi / 智谱 / 本地 vLLM
 - 多层防线：红线词 → 脱敏 → LLM → 敏感词 → 占位符回填 → 分级与水印
 - QA 知识库：增删改查、审核流、Excel 批量导入、热更新
+- QA 内容分支协作：在 `qa-staging` 编辑 Excel、自动校验/导入测试库，审核后合并 `main`（见 [qa/README.md](qa/README.md)）
 - NiceGUI 管理后台：登录、概览 KPI、QA 管理、对话记录、未命中聚合
 - 审计：JSON 行文件 + DB 双写
 - JWT 鉴权：admin / auditor / editor / viewer

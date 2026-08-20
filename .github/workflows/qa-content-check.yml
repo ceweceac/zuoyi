@@ -1,0 +1,28 @@
+name: QA content check
+
+on:
+  pull_request:
+    paths:
+      - "qa/qa_content.xlsx"
+      - "qa/qa_content.csv"
+      - "scripts/qa_content_workflow.py"
+  push:
+    branches: [qa-staging]
+    paths:
+      - "qa/qa_content.xlsx"
+      - "qa/qa_content.csv"
+      - "scripts/qa_content_workflow.py"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install openpyxl==3.1.2
+      - run: python -m unittest scripts/test_qa_content_workflow.py
+      - run: python scripts/qa_content_workflow.py check
+      - run: python scripts/qa_content_workflow.py sync-csv --csv /tmp/qa_content.csv
+      - run: cmp qa/qa_content.csv /tmp/qa_content.csv
