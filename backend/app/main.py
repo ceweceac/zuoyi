@@ -117,8 +117,8 @@ app = FastAPI(title="QA Bot", lifespan=lifespan)
 
 @app.middleware("http")
 async def isolate_qa_workspace(request, call_next):
-    """测试工作台只暴露 QA 与登录相关入口，防止通过手输 URL 进入群发/设置页面。"""
-    if not settings.qa_workspace_mode:
+    """QA-only 模式只暴露内容入口；完整测试后台由账号角色继续控制页面权限。"""
+    if not settings.qa_workspace_mode or settings.qa_workspace_full_ui:
         return await call_next(request)
     path = request.url.path
     if path == "/":
@@ -154,7 +154,13 @@ if not os.environ.get("QABOT_UI_STORAGE_SECRET"):
 
 ui.run_with(
     app,
-    title="QA 内容测试工作台" if settings.qa_workspace_mode else "QA 客服机器人 · 管理后台",
+    title=(
+        "QA 全功能测试后台"
+        if settings.qa_workspace_mode and settings.qa_workspace_full_ui
+        else "QA 内容测试工作台"
+        if settings.qa_workspace_mode
+        else "QA 客服机器人 · 管理后台"
+    ),
     storage_secret=_NICEGUI_STORAGE_SECRET,
     favicon="🤖",
 )

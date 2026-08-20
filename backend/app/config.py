@@ -153,6 +153,9 @@ class Settings(BaseSettings):
     # === QA 内容测试工作台 ===
     # 开启后只提供隔离的 QA 编辑/审核能力；不会连接钉钉，也不会启动群发调度。
     qa_workspace_mode: bool = False
+    # 在保持测试库、停用机器人和停用调度器的前提下，开放完整后台页面用于代码联调。
+    # 伙伴仍受其账号角色限制；默认 False 保持原来的 QA-only 安全界面。
+    qa_workspace_full_ui: bool = False
     # 测试库的初始基线。留空时读取仓库 qa/qa_content.xlsx。
     qa_workspace_baseline_xlsx: str = ""
     # 测试平台只启用下面两个账号。公开部署时密码必须至少 12 位。

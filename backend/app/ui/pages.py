@@ -193,8 +193,9 @@ def _layout(active: str):
         "/failure-reports": "失败分析报告",
     }
     with ui.left_drawer(value=True, fixed=True).classes("bg-slate-900 text-white"):
-        brand_title = "🧪 QA 测试工作台" if cfg.qa_workspace_mode else "🤖 QA Bot"
-        brand_subtitle = "内容编辑 · 审核 · 合并" if cfg.qa_workspace_mode else "钉钉智能客服管理"
+        full_test_ui = cfg.qa_workspace_mode and cfg.qa_workspace_full_ui
+        brand_title = "🧪 QA 全功能测试后台" if full_test_ui else "🧪 QA 测试工作台" if cfg.qa_workspace_mode else "🤖 QA Bot"
+        brand_subtitle = "完整代码联调 · 与正式环境隔离" if full_test_ui else "内容编辑 · 审核 · 合并" if cfg.qa_workspace_mode else "钉钉智能客服管理"
         ui.html(f'''
           <div style="padding:18px 16px 14px;border-bottom:1px solid rgba(255,255,255,0.07);margin-bottom:6px">
             <div style="font-size:15px;font-weight:700;color:#fff;letter-spacing:-0.3px">{brand_title}</div>
@@ -211,7 +212,7 @@ def _layout(active: str):
             ("/users", "用户管理", "people"),
             ("/settings", "系统设置", "settings"),
         ]
-        if cfg.qa_workspace_mode:
+        if cfg.qa_workspace_mode and not cfg.qa_workspace_full_ui:
             items = [("/qa", "QA 内容编辑", "edit_note")]
         if A.role() != "admin":
             items = [it for it in items if it[0] not in ("/broadcast", "/failure-reports")]
@@ -327,8 +328,9 @@ document.addEventListener('DOMContentLoaded', function(){
 
     with ui.element("div").props('id="login-card"'):
         ui.html('<div class="login-logo">🤖</div>')
-        login_title = "QA 内容测试工作台" if cfg.qa_workspace_mode else "QA Bot 管理后台"
-        login_subtitle = "独立测试库 · 修改后审核合并" if cfg.qa_workspace_mode else "钉钉智能客服 · Admin Console"
+        full_test_ui = cfg.qa_workspace_mode and cfg.qa_workspace_full_ui
+        login_title = "QA 全功能测试后台" if full_test_ui else "QA 内容测试工作台" if cfg.qa_workspace_mode else "QA Bot 管理后台"
+        login_subtitle = "完整代码联调 · 独立测试库" if full_test_ui else "独立测试库 · 修改后审核合并" if cfg.qa_workspace_mode else "钉钉智能客服 · Admin Console"
         ui.html(f'<div class="login-title">{login_title}</div>')
         ui.html(f'<div class="login-sub">{login_subtitle}</div>')
 
@@ -352,7 +354,7 @@ document.addEventListener('DOMContentLoaded', function(){
                 "username": u.username, "displayName": u.display_name, "role": u.role,
             })
             ui.notify(f"欢迎回来，{u.display_name} 👋", type="positive")
-            ui.navigate.to("/qa" if cfg.qa_workspace_mode else "/")
+            ui.navigate.to("/qa" if cfg.qa_workspace_mode and not cfg.qa_workspace_full_ui else "/")
 
         ui.element("div").style("height:16px")
         ui.button("登 录", on_click=do_login).props("color=primary").classes("w-full")
@@ -476,7 +478,7 @@ def _token_stats():
 def page_dashboard():
     if not _require_login():
         return
-    if cfg.qa_workspace_mode:
+    if cfg.qa_workspace_mode and not cfg.qa_workspace_full_ui:
         ui.navigate.to("/qa")
         return
     _inject_zh()

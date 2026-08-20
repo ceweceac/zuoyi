@@ -9,6 +9,7 @@ services:
     restart: unless-stopped
     environment:
       QA_WORKSPACE_MODE: "true"
+      QA_WORKSPACE_FULL_UI: "true"
       QA_WORKSPACE_BASELINE_XLSX: /app/qa/qa_content.xlsx
       QA_WORKSPACE_OWNER_USERNAME: ${QA_WORKSPACE_OWNER_USERNAME:-qa_owner}
       QA_WORKSPACE_OWNER_PASSWORD: ${QA_WORKSPACE_OWNER_PASSWORD:?请设置负责人强密码}
