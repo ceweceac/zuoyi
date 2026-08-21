@@ -5,11 +5,13 @@
 """
 import json
 import re
+import uuid
 from datetime import datetime
 from typing import Optional
 
 from nicegui import ui
 
+from ..config import settings
 from ..db import SessionLocal, DingtalkGroup, Broadcast, BroadcastSchedule, UploadedFile
 from ..services import broadcaster, scheduler as bcast_scheduler
 from ..services import uploader
@@ -468,12 +470,18 @@ def _render_direct_tab():
 # ----------------- 群管理 -----------------
 def _render_groups_tab():
     with ui.card().classes("w-full bg-blue-50 p-4 mt-2"):
-        ui.label("📌 如何让群出现在这里").classes("font-semibold text-blue-800")
-        ui.label("1. 群主在钉钉群里 → 群设置 → 智能群助手 → 添加机器人 → 选择本企业机器人")
-        ui.label("2. 添加完成后，群里随便发一条消息（@ 一下机器人最好）")
-        ui.label("3. 回到这个页面，点【刷新】，群会自动出现")
-        ui.label("💡 不需要手动填 openConversationId。手动添加仅在自动机制失效时使用，"
-                 "且需要从钉钉开放平台 API 取，普通用户看不到。").classes("text-slate-600 text-sm mt-1")
+        if settings.qa_workspace_mode:
+            ui.label("🧪 测试群 Webhook").classes("font-semibold text-blue-800")
+            ui.label("正式群只作为快照展示，已全部禁用并清除 Webhook。测试时请新建一个测试群 Webhook。")
+            ui.label("只需要群名、钉钉自定义机器人 Webhook 和 SEC 加签密钥，不需要 openConversationId。")\
+                .classes("text-slate-600 text-sm mt-1")
+        else:
+            ui.label("📌 如何让群出现在这里").classes("font-semibold text-blue-800")
+            ui.label("1. 群主在钉钉群里 → 群设置 → 智能群助手 → 添加机器人 → 选择本企业机器人")
+            ui.label("2. 添加完成后，群里随便发一条消息（@ 一下机器人最好）")
+            ui.label("3. 回到这个页面，点【刷新】，群会自动出现")
+            ui.label("💡 不需要手动填 openConversationId。手动添加仅在自动机制失效时使用，"
+                     "且需要从钉钉开放平台 API 取，普通用户看不到。").classes("text-slate-600 text-sm mt-1")
 
     table = ui.table(
         columns=[
@@ -621,9 +629,72 @@ def _render_groups_tab():
         ui.label("机器人被拉入群后自动入库 · 也可手动添加").classes("text-slate-500 text-sm")
         with ui.row().classes("gap-2"):
             ui.button("刷新", icon="refresh", on_click=load)
+            if settings.qa_workspace_mode:
+                ui.button(
+                    "新建测试群 Webhook", icon="add_link",
+                    on_click=lambda: _open_test_webhook_group_dialog(load),
+                ).props("color=positive")
             ui.button("手动添加群", icon="add", on_click=lambda: _open_manual_add_group_dialog(load)).props("color=positive")
 
     load()
+
+
+def _open_test_webhook_group_dialog(refresh_cb):
+    """测试环境直接用自定义机器人 Webhook 建群，不依赖正式应用机器人。"""
+    if not settings.qa_workspace_mode:
+        ui.notify("该入口只允许在测试环境使用", type="negative")
+        return
+    with ui.dialog() as dlg, ui.card().classes("w-[620px]"):
+        ui.label("新建测试群 Webhook").classes("text-lg font-semibold")
+        ui.label("请只填写专门用于测试的群。正式群 Webhook 禁止放进测试环境。")\
+            .classes("text-red-600 text-sm")
+        title_in = ui.input("测试群名称", placeholder="例如：佐伊机器人测试群").classes("w-full")
+        url_in = ui.input(
+            "Webhook 地址", placeholder="https://oapi.dingtalk.com/robot/send?access_token=xxx",
+        ).classes("w-full")
+        secret_in = ui.input(
+            "加签密钥（SEC 开头，可选）", placeholder="SECxxxxxxxx",
+        ).classes("w-full")
+
+        def save(test_after_save: bool = False):
+            title = (title_in.value or "").strip()
+            url = (url_in.value or "").strip()
+            secret = (secret_in.value or "").strip()
+            if not title:
+                ui.notify("请填写测试群名称", type="warning")
+                return
+            if not url.startswith("https://oapi.dingtalk.com/robot/send"):
+                ui.notify("Webhook 必须以 https://oapi.dingtalk.com/robot/send 开头", type="negative")
+                return
+            from ..services import crypto
+            db = SessionLocal()
+            try:
+                exists = db.query(DingtalkGroup).filter(DingtalkGroup.webhook_url == url).first()
+                if exists:
+                    ui.notify(f"这个 Webhook 已配置在群「{exists.conversation_title}」", type="warning")
+                    return
+                db.add(DingtalkGroup(
+                    open_conversation_id=f"test-webhook-{uuid.uuid4().hex}",
+                    conversation_title=title[:255],
+                    active="1",
+                    note="TEST ONLY · 测试环境 Webhook 群",
+                    webhook_url=url[:500],
+                    webhook_secret=crypto.encrypt(secret) if secret else None,
+                ))
+                db.commit()
+            finally:
+                db.close()
+            dlg.close()
+            refresh_cb()
+            ui.notify("测试群 Webhook 已保存", type="positive")
+            if test_after_save:
+                _test_atall(url, secret)
+
+        with ui.row().classes("w-full justify-end gap-2 mt-3"):
+            ui.button("取消", on_click=dlg.close).props("flat")
+            ui.button("只保存", on_click=lambda: save(False)).props("outline color=primary")
+            ui.button("保存并测试发送", on_click=lambda: save(True)).props("color=primary")
+    dlg.open()
 
 
 def _save_atall(group_id: int, url: str, secret: str, dlg, refresh_cb):

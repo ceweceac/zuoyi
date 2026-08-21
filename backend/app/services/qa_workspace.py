@@ -154,10 +154,13 @@ def ensure_workspace_ready() -> None:
     partner = settings.qa_workspace_partner_username.strip()
     owner_password = settings.qa_workspace_owner_password
     partner_password = settings.qa_workspace_partner_password
+    partner_role = settings.qa_workspace_partner_role.strip().lower()
     if not owner or not partner or owner == partner:
         raise RuntimeError("QA 测试平台 owner/partner 用户名不能为空且不能相同")
     if len(owner_password) < 12 or len(partner_password) < 12:
         raise RuntimeError("QA 测试平台账号密码必须至少 12 位，禁止使用默认弱密码")
+    if partner_role not in {"editor", "admin"}:
+        raise RuntimeError("QA 测试平台伙伴角色只能是 editor 或 admin")
 
     baseline = load_baseline()
     db = SessionLocal()
@@ -193,7 +196,7 @@ def ensure_workspace_ready() -> None:
         )
         account_specs = [
             (owner, owner_password, "QA 审核负责人", "admin"),
-            (partner, partner_password, "QA 内容伙伴", "editor"),
+            (partner, partner_password, "测试环境开发伙伴", partner_role),
         ]
         for username, password, display_name, role in account_specs:
             account = db.query(SysUser).filter(SysUser.username == username).first()

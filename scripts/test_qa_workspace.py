@@ -1,4 +1,5 @@
 import io
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from backend.app.services.qa_workspace import (
     collect_changes,
     load_baseline,
 )
+from scripts.refresh_staging_from_production import sanitize_database, write_baseline_xlsx
 
 
 def item(**values):
@@ -82,6 +84,70 @@ class QaWorkspaceTests(unittest.TestCase):
         self.assertEqual(sheet["C2"].value, "=不应成为公式")
         self.assertEqual(sheet["C2"].data_type, "s")
         self.assertEqual(sheet["D2"].data_type, "s")
+
+
+class StagingRefreshTests(unittest.TestCase):
+    def test_snapshot_keeps_content_but_removes_formal_delivery_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "qabot-workspace.db"
+            baseline_path = Path(directory) / "baseline.xlsx"
+            connection = sqlite3.connect(db_path)
+            connection.executescript(
+                """
+                CREATE TABLE sys_setting (k TEXT PRIMARY KEY, v TEXT);
+                CREATE TABLE sys_user (id INTEGER PRIMARY KEY, enabled TEXT);
+                CREATE TABLE dingtalk_group (
+                    id INTEGER PRIMARY KEY, active TEXT, webhook_url TEXT,
+                    webhook_secret TEXT, robot_code TEXT, note TEXT
+                );
+                CREATE TABLE broadcast_schedule (id INTEGER PRIMARY KEY, enabled TEXT);
+                CREATE TABLE uploaded_file (
+                    id INTEGER PRIMARY KEY, filename TEXT, public_url TEXT,
+                    dingtalk_media_id TEXT, dingtalk_media_uploaded_at TEXT
+                );
+                CREATE TABLE qa_item (
+                    id INTEGER PRIMARY KEY, question TEXT, answer TEXT,
+                    answer_variants TEXT, category TEXT, tags TEXT, domains TEXT,
+                    status TEXT, enabled TEXT, deleted TEXT, version INTEGER
+                );
+                INSERT INTO sys_setting VALUES ('dingtalk_client_secret', 'formal-secret');
+                INSERT INTO sys_setting VALUES ('daily_brief_enabled', 'True');
+                INSERT INTO sys_setting VALUES ('bot_persona', '完整内容保留');
+                INSERT INTO sys_user VALUES (1, '1');
+                INSERT INTO dingtalk_group VALUES (1, '1', 'https://formal', 'SEC-formal', 'robot', '正式群');
+                INSERT INTO broadcast_schedule VALUES (1, '1');
+                INSERT INTO uploaded_file VALUES (1, 'a.png', 'https://formal/a.png', 'media', '2026-01-01');
+                INSERT INTO qa_item VALUES (1, '问题', '答案', '', '分类', '', '', 'approved', '1', '0', 3);
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            sanitize_database(db_path)
+            count = write_baseline_xlsx(db_path, baseline_path)
+
+            connection = sqlite3.connect(db_path)
+            settings = dict(connection.execute("SELECT k, v FROM sys_setting"))
+            group = connection.execute(
+                "SELECT active, webhook_url, webhook_secret, robot_code FROM dingtalk_group"
+            ).fetchone()
+            schedule = connection.execute("SELECT enabled FROM broadcast_schedule").fetchone()[0]
+            user = connection.execute("SELECT enabled FROM sys_user").fetchone()[0]
+            upload = connection.execute(
+                "SELECT public_url, dingtalk_media_id FROM uploaded_file"
+            ).fetchone()
+            connection.close()
+
+            self.assertEqual(settings["dingtalk_client_secret"], "")
+            self.assertEqual(settings["daily_brief_enabled"], "False")
+            self.assertEqual(settings["bot_persona"], "完整内容保留")
+            self.assertEqual(group, ("0", None, None, None))
+            self.assertEqual(schedule, "0")
+            self.assertEqual(user, "0")
+            self.assertEqual(upload, ("/files/a.png", None))
+            self.assertEqual(count, 1)
+            workbook = openpyxl.load_workbook(baseline_path)
+            self.assertEqual(workbook["QA内容"]["B2"].value, 1)
 
 
 if __name__ == "__main__":

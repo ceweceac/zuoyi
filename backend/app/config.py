@@ -163,6 +163,8 @@ class Settings(BaseSettings):
     qa_workspace_owner_password: str = ""
     qa_workspace_partner_username: str = "qa_partner"
     qa_workspace_partner_password: str = ""
+    # 内容协作默认 editor；完整代码联调环境可显式设为 admin。
+    qa_workspace_partner_role: str = "editor"
 
     # === 群发推送 ===
     # 文件公网访问基址（必须钉钉能访问到才能群发图片/视频卡片）。

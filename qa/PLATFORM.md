@@ -55,3 +55,20 @@ python scripts/run_qa_workspace.py
 - 测试数据持久化在独立的 `qa-workspace-data` Docker volume。
 - 伙伴账号不能停用或删除 QA；这些操作只有负责人可执行。
 - 未审核修改不会进入正式环境变更包。
+
+## 从正式环境刷新完整测试快照
+
+完整联调环境可以继承正式库的 QA、对话、设置、群列表、群发记录和附件。刷新脚本会自动备份旧测试库，并清除正式钉钉凭证、正式群 Webhook、外部 API 密钥，同时禁用所有正式群和定时任务：
+
+```bash
+python scripts/refresh_staging_from_production.py \
+  --source-db /path/to/production/backend/data/qabot.db \
+  --target-db backend/data/qabot-workspace.db \
+  --baseline-xlsx backend/data/qa-workspace-baseline.xlsx \
+  --source-uploads /path/to/production/backend/data/uploads \
+  --target-uploads backend/data/uploads
+```
+
+执行前先停止测试服务，完成后再启动。正式库始终只读，不会被脚本修改。
+
+伙伴需要测试群发时，在完整测试后台进入“群发推送 → 群管理 → 新建测试群 Webhook”，填写专用测试群的 Webhook 和 SEC 加签密钥。不要在测试环境填写正式群 Webhook。
